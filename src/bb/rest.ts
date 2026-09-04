@@ -45,6 +45,7 @@ async function readEnvelope(res: Response): Promise<Envelope> {
 export class BbClient {
   readonly url: string;
   readonly password: string;
+  helperConnected = false;
   private readonly fetchImpl: FetchFn;
 
   constructor(config: BbConfig) {
@@ -76,7 +77,9 @@ export class BbClient {
 
   async serverInfo(): Promise<{ privateApi: boolean; helperConnected: boolean }> {
     const envelope = await this.request("GET", "/api/v1/server/info");
-    return parseServerInfo(envelope);
+    const info = parseServerInfo(envelope);
+    this.helperConnected = info.helperConnected;
+    return info;
   }
 
   async listChats(): Promise<Chat[]> {
@@ -103,11 +106,12 @@ export class BbClient {
     tempGuid: string
     method?: "apple-script" | "private-api"
   }): Promise<unknown> {
+    const wantPrivate = args.method === "private-api" && this.helperConnected;
     const envelope = await this.request("POST", "/api/v1/message/text", {
       chatGuid: args.chatGuid,
       message: args.message,
       tempGuid: args.tempGuid,
-      method: args.method ?? "apple-script",
+      method: wantPrivate ? "private-api" : "apple-script",
     });
     return envelope.data;
   }
@@ -119,6 +123,7 @@ export class BbClient {
   }
 
   async markRead(chatGuid: ChatGuid): Promise<void> {
+    if (!this.helperConnected) return;
     await this.request("POST", `/api/v1/chat/${encodeChatPath(chatGuid)}/read`, {});
   }
 
@@ -127,6 +132,7 @@ export class BbClient {
     messageGuid: string
     reaction: string
   }): Promise<void> {
+    if (!this.helperConnected) return;
     await this.request("POST", "/api/v1/message/react", {
       chatGuid: args.chatGuid,
       selectedMessageGuid: args.messageGuid,
@@ -135,6 +141,7 @@ export class BbClient {
   }
 
   async startTyping(chatGuid: ChatGuid): Promise<void> {
+    if (!this.helperConnected) return;
     await this.request("POST", `/api/v1/chat/${encodeChatPath(chatGuid)}/typing`, {});
   }
 }
