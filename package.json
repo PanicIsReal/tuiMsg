@@ -1,0 +1,46 @@
+{
+  "name": "tuimsg",
+  "version": "0.1.0",
+  "description": "Messages.app TUI over BlueBubbles",
+  "type": "module",
+  "bin": {
+    "imsg": "./bin/imsg"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "dev": "bun src/cli.tsx",
+    "imsg": "bun src/cli.tsx",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "smoke": "bun scripts/pty-smoke.ts",
+    "build": "bun build src/cli.tsx --outdir dist --target bun --outfile dist/cli.js"
+  },
+  "engines": {
+    "bun": ">=1.3.0"
+  },
+  "license": "MIT",
+  "keywords": [
+    "imessage",
+    "bluebubbles",
+    "tui",
+    "messages"
+  ],
+  "dependencies": {
+    "@opentui/core": "^0.5.10",
+    "@opentui/react": "^0.5.10",
+    "react": "^19.2.8",
+    "socket.io": "^4.8.3",
+    "socket.io-client": "^4.8.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.1",
+    "@types/react": "^19.2.18",
+    "bun-types": "^1.4.0",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.0"
+  }
+}

@@ -1,0 +1,6 @@
+ts	phase	decision	why	evidence	result
+2026-09-04T18:00:00Z	frame	OpenTUI React over Ink	Messages window needs virtualized scroll, mouse, OSC 52, images	plan.md	picked
+2026-09-04T18:05:00Z	frame	npm name tuimsg, bin imsg	imsg is taken on npm by a 2022 AppleScript stub	registry.npmjs.org/imsg	picked
+2026-09-04T18:20:00Z	domain	message sum type plus reducer	illegal combos must not compile, UI is a projection	src/domain/model.ts	tests green
+2026-09-04T18:40:00Z	bb	in-process fake HTTP+socket.io	tests and --fake must not need a live Mac	src/bb/fake.ts	17 tests green
+2026-09-04T19:00:00Z	ui	comfortable two-pane, skip scratch variants	Messages chrome is list plus transcript plus composer	imsg --fake frame contains Messages	verified
