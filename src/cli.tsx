@@ -41,6 +41,33 @@ function dispatch(event: AppEvent): void {
   };
   if (background) startTransition(apply);
   else apply();
+  if (event.type === "select-chat") {
+    void loadChat(event.chatGuid);
+  }
+}
+
+async function loadChat(chatGuid: AppState["selected"]): Promise<void> {
+  const session = sessionRef.current;
+  if (!session || !chatGuid) return;
+  if ((session.state.messages.get(chatGuid) ?? []).length > 0) {
+    if (session.state.capabilities.helperConnected) {
+      try {
+        await session.client.markRead(chatGuid);
+      } catch {
+        /* mark-read needs Private API */
+      }
+    }
+    return;
+  }
+  try {
+    const messages = await session.client.listMessages(chatGuid);
+    dispatch({ type: "messages-loaded", chatGuid, messages });
+    if (session.state.capabilities.helperConnected) {
+      await session.client.markRead(chatGuid);
+    }
+  } catch {
+    /* keep the empty transcript */
+  }
 }
 
 function handleSend(chat: Chat, text: string): void {
