@@ -78,6 +78,36 @@ describe("reduce", () => {
     state = reduce(state, { type: "select-chat", chatGuid });
     expect(state.chats.get(chatGuid)?.unreadCount).toBe(0);
   });
+
+  it("applies contact display names onto DM titles", () => {
+    let state = emptyState();
+    state = reduce(state, {
+      type: "chats-loaded",
+      chats: [
+        {
+          guid: chatGuid,
+          kind: "dm",
+          service: "iMessage",
+          title: "+15551234567",
+          participants: [{ address: parseHandleAddress("+15551234567"), service: "iMessage" }],
+          unreadCount: 0,
+          muted: false,
+        },
+      ],
+    });
+    expect(state.chats.get(chatGuid)?.title).toBe("+15551234567");
+    state = reduce(state, {
+      type: "contacts-loaded",
+      contacts: [
+        {
+          displayName: "Jane Doe",
+          phones: [parseHandleAddress("+15551234567")],
+          emails: [],
+        },
+      ],
+    });
+    expect(state.chats.get(chatGuid)?.title).toBe("Jane Doe");
+  });
 });
 
 describe("view", () => {
