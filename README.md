@@ -25,7 +25,7 @@ imsg
 
 On first launch, enter the BlueBubbles server address and password. A bare address uses HTTP on port `1234`. Use a full `https://` URL for TLS or a different port.
 
-`imsg` writes `~/.config/imsg/config.json` and stores the password in macOS Keychain. Run `imsg --setup` to change the server.
+`imsg` writes `~/.config/imsg/config.json` and stores the password in macOS Keychain. Run `npx tuimsg --setup` to change the server. After a global install, that is `imsg --setup`.
 
 On Linux it uses Secret Service (GNOME Keyring or KWallet). If that is unavailable, you can save the password in the config file (`0600`, not encrypted) or keep it for this session only.
 
@@ -36,13 +36,15 @@ For scripts, set `IMSG_PASSWORD` and optionally `IMSG_URL` (default `http://127.
 ## Run
 
 ```sh
-imsg
-imsg --setup
-imsg --fake
-imsg --help
+npx tuimsg
+npx tuimsg --setup
+npx tuimsg --fake
+npx tuimsg --help
 ```
 
-`imsg` uses the saved login. `--setup` changes the server. `--fake` uses demo data and does not need BlueBubbles. Press `?` for keys. Quit with `q` or `Ctrl+C`. Copy uses OSC 52. Attachments save on the computer running `imsg`.
+If you installed globally, those are `imsg`, `imsg --setup`, `imsg --fake`, and `imsg --help`.
+
+`npx tuimsg` uses the saved login. `--setup` changes the server. `--fake` uses demo data and does not need BlueBubbles. Press `?` for keys. Quit with `q` or `Ctrl+C`. Copy uses OSC 52. Attachments save on the computer running `imsg`.
 
 Reactions, typing indicators, and mark-read need the BlueBubbles Private API helper. Send and receive work without it.
 
