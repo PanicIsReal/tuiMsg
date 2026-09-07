@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { FakeBb } from "../../src/bb/fake.ts";
-import { BbClient, BbError } from "../../src/bb/rest.ts";
+import { BbClient, BbError, MAX_DOWNLOAD_BYTES, MAX_PREVIEW_BYTES } from "../../src/bb/rest.ts";
 import { parseChatGuid, parseMessageGuid } from "../../src/domain/ids.ts";
 
 let fake: FakeBb | undefined;
@@ -254,6 +254,55 @@ describe("BbClient against fake", () => {
         !error.message.includes("top-secret") &&
         error.message.includes("REDACTED"),
     );
+  });
+
+  it("redacts a percent-encoded password in network errors", async () => {
+    const password = "top secret+";
+    const client = new BbClient({
+      url: "http://example.invalid",
+      password,
+      fetch: async () => {
+        throw new Error(`fetch failed: http://example.invalid/api/v1/ping?password=${encodeURIComponent(password)}`);
+      },
+    });
+    await expect(client.ping()).rejects.toSatisfy(
+      (error: unknown) =>
+        error instanceof BbError &&
+        !error.message.includes(password) &&
+        !error.message.includes(encodeURIComponent(password)),
+    );
+  });
+
+  it("does not follow redirects that would carry the password", async () => {
+    const client = new BbClient({
+      url: "http://example.invalid",
+      password: "pw",
+      fetch: async (_input, init) => {
+        expect(init?.redirect).toBe("error");
+        return new Response(JSON.stringify({ status: 200, data: { private_api: false, helper_connected: false } }), { status: 200 });
+      },
+    });
+    await expect(client.ping()).resolves.toBe(true);
+  });
+
+  it("rejects an original download when Content-Length exceeds the cap", async () => {
+    const client = new BbClient({
+      url: "http://example.invalid",
+      password: "pw",
+      fetch: async () => new Response(new Uint8Array([1]), { headers: { "content-length": String(MAX_DOWNLOAD_BYTES + 1) } }),
+    });
+    await expect(client.downloadAttachment({ guid: "huge", name: "clip.mov", mime: "video/quicktime", bytes: MAX_DOWNLOAD_BYTES + 1 }))
+      .rejects.toSatisfy((error: unknown) => error instanceof BbError && error.kind === "invalid" && error.message.includes("256 MB"));
+  });
+
+  it("stops reading a preview body that exceeds the preview cap", async () => {
+    const client = new BbClient({
+      url: "http://example.invalid",
+      password: "pw",
+      fetch: async () => new Response(new Uint8Array(MAX_PREVIEW_BYTES + 1)),
+    });
+    await expect(client.previewAttachment({ guid: "photo", name: "photo.jpg", mime: "image/jpeg", bytes: MAX_PREVIEW_BYTES + 1 }))
+      .rejects.toSatisfy((error: unknown) => error instanceof BbError && error.kind === "invalid" && error.message.includes("16 MB"));
   });
 
   it("times out while consuming JSON and binary response bodies", async () => {

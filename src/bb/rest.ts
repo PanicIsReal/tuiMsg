@@ -71,10 +71,48 @@ function safeRequest(method: string, href: string): string {
   const url = new URL(href);
   return `${method} ${url.origin}${url.pathname}`;
 }
+export const MAX_PREVIEW_BYTES = 16 * 1024 * 1024;
+export const MAX_DOWNLOAD_BYTES = 256 * 1024 * 1024;
+
 function sanitize(value: string, password: string): string {
-  return value
-    .replaceAll(password, "REDACTED")
-    .replace(/password=[^&\s]+/gi, "password=REDACTED");
+  const encoded = encodeURIComponent(password);
+  let redacted = value.replaceAll(password, "REDACTED");
+  if (encoded !== password) redacted = redacted.replaceAll(encoded, "REDACTED");
+  return redacted.replace(/password=[^&\s]+/gi, "password=REDACTED");
+}
+
+function tooLarge(maxBytes: number): BbError {
+  return new BbError("invalid", `Attachment is larger than ${Math.round(maxBytes / (1024 * 1024))} MB`);
+}
+
+async function readLimitedBytes(response: Response, maxBytes: number): Promise<Uint8Array> {
+  const declared = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maxBytes) throw tooLarge(maxBytes);
+  if (!response.body) {
+    const buffer = await response.arrayBuffer();
+    if (buffer.byteLength > maxBytes) throw tooLarge(maxBytes);
+    return new Uint8Array(buffer);
+  }
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      throw tooLarge(maxBytes);
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
 }
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -166,6 +204,7 @@ export class BbClient {
     path: string,
     body?: unknown,
     binary = false,
+    maxBytes = MAX_DOWNLOAD_BYTES,
   ): Promise<Envelope | Uint8Array> {
     if (this.closed)
       throw new BbError(
@@ -195,7 +234,7 @@ export class BbClient {
         ),
       );
     }, this.timeoutMs);
-    const init: RequestInit = { method, signal: controller.signal };
+    const init: RequestInit = { method, signal: controller.signal, redirect: "error" };
     if (body !== undefined) {
       init.headers = { "content-type": "application/json" };
       init.body = JSON.stringify(body);
@@ -206,8 +245,7 @@ export class BbClient {
         cancelled,
       ]);
       if (binary && response.ok) {
-        const body = await Promise.race([response.arrayBuffer(), cancelled]);
-        return new Uint8Array(body);
+        return await Promise.race([readLimitedBytes(response, maxBytes), cancelled]);
       }
       const text = await Promise.race([response.text(), cancelled]);
       let envelope: Envelope = { status: response.status };
@@ -455,7 +493,7 @@ export class BbClient {
     return e.data ? messageFrom(e.data) : undefined;
   }
   async previewAttachment(attachment: Attachment): Promise<Uint8Array> {
-    return this.request("GET", `/api/v1/attachment/${encodeURIComponent(attachment.guid)}/download?original=false&width=960&quality=good&force=false`, undefined, true) as Promise<Uint8Array>;
+    return this.request("GET", `/api/v1/attachment/${encodeURIComponent(attachment.guid)}/download?original=false&width=960&quality=good&force=false`, undefined, true, MAX_PREVIEW_BYTES) as Promise<Uint8Array>;
   }
   async downloadAttachment(a: Attachment): Promise<Uint8Array> {
     return this.request(
@@ -463,6 +501,7 @@ export class BbClient {
       `/api/v1/attachment/${encodeURIComponent(a.guid)}/download?original=true`,
       undefined,
       true,
+      MAX_DOWNLOAD_BYTES,
     ) as Promise<Uint8Array>;
   }
 }
