@@ -3,9 +3,10 @@ import { connectBbSocket, type SocketHandlers } from "./bb/socket.ts";
 import { openLocalFile, saveAttachment } from "./attachments.ts";
 import { writeClipboard } from "./clipboard.ts";
 import { parseHandleAddress, parseMessageGuid, type ChatGuid, type MessageGuid } from "./domain/ids.ts";
-import { emptyState, privateApiAvailable, type AppEvent, type AppState, type Attachment, type Intent, type SavedSession, type Session } from "./domain/model.ts";
+import { emptyState, privateApiAvailable, type AppEvent, type AppState, type Attachment, type HttpUrl, type Intent, type LinkPreview, type SavedSession, type Session } from "./domain/model.ts";
 import { reduce } from "./domain/reduce.ts";
 import { createJournal, type Journal } from "./journal.ts";
+import { openHttpUrl, resolveLinkPreview } from "./links.ts";
 
 type SocketLike = { close: () => unknown };
 type Timer = ReturnType<typeof setTimeout>;
@@ -15,8 +16,16 @@ type ImageLoad = {
   resolve: (bytes: Uint8Array) => void;
   reject: (error: Error) => void;
 };
+type LinkLoad = {
+  url: HttpUrl;
+  promise: Promise<LinkPreview>;
+  resolve: (preview: LinkPreview) => void;
+  reject: (error: Error) => void;
+};
 
 const MAX_ACTIVE_IMAGE_LOADS = 2;
+const MAX_ACTIVE_LINK_LOADS = 3;
+const MAX_LINK_CACHE = 64;
 
 export type SessionOptions = {
   url: string;
@@ -26,6 +35,8 @@ export type SessionOptions = {
   clipboard?: (text: string) => void | Promise<void>;
   saveAttachment?: typeof saveAttachment;
   openFile?: (path: string) => Promise<void>;
+  openUrl?: (url: HttpUrl) => Promise<void>;
+  resolveLinkPreview?: typeof resolveLinkPreview;
   attachmentDirectory?: string;
   ssh?: boolean;
   quit?: () => void | Promise<void>;
@@ -39,6 +50,8 @@ export function createSession(options: SessionOptions): Session {
   const clipboard = options.clipboard ?? writeClipboard;
   const saveFile = options.saveAttachment ?? saveAttachment;
   const openFile = options.openFile ?? openLocalFile;
+  const openUrl = options.openUrl ?? openHttpUrl;
+  const resolvePreview = options.resolveLinkPreview ?? resolveLinkPreview;
   const socketFactory = options.connectSocket ?? connectBbSocket;
   const now = options.now ?? Date.now;
   let state = emptyState();
@@ -58,6 +71,11 @@ export function createSession(options: SessionOptions): Session {
   const imageLoads = new Map<string, Promise<Uint8Array>>();
   const activeImageLoads = new Set<string>();
   const queuedImageLoads: ImageLoad[] = [];
+  const linkCache = new Map<string, LinkPreview>();
+  const linkLoads = new Map<string, Promise<LinkPreview>>();
+  const activeLinkLoads = new Map<string, LinkLoad>();
+  const queuedLinkLoads: LinkLoad[] = [];
+  let linkAbort = new AbortController();
   let imageCacheBytes = 0;
   let contactsLoad: Promise<void> | undefined;
   let serverWatermark = 0;
@@ -293,6 +311,7 @@ export function createSession(options: SessionOptions): Session {
       case "react": track(client.sendReaction(intent).then((message) => { if (message) dispatch({ type: "message-upserted", message }); })).catch(report); break;
       case "create-chat": createChat(intent); break;
       case "attachment": track(handleAttachment(intent)).catch(report); break;
+      case "open-url": track(handleOpenUrl(intent)).catch(report); break;
       case "copy": track(Promise.resolve(clipboard(intent.text))).then(() => dispatch({ type: "notice", notice: { kind: "info", text: "Copied." } })).catch(report); break;
       case "quit": track(Promise.resolve(options.quit?.())).catch(report); break;
     }
@@ -365,6 +384,63 @@ export function createSession(options: SessionOptions): Session {
     dispatch({ type: "notice", notice: { kind: "info", text: `${prefix} at ${path}` } });
   }
 
+  async function handleOpenUrl(intent: Extract<Intent, { type: "open-url" }>): Promise<void> {
+    await openUrl(intent.url);
+    dispatch({ type: "notice", notice: { kind: "info", text: "Opened." } });
+  }
+
+  async function loadLinkPreview(url: HttpUrl): Promise<LinkPreview> {
+    if (closed) throw new Error("Session is closed");
+    const cached = linkCache.get(url);
+    if (cached) {
+      linkCache.delete(url);
+      linkCache.set(url, cached);
+      return cached;
+    }
+    const pending = linkLoads.get(url);
+    if (pending) return pending;
+    let resolve!: LinkLoad["resolve"];
+    let reject!: LinkLoad["reject"];
+    const promise = new Promise<LinkPreview>((onResolve, onReject) => {
+      resolve = onResolve;
+      reject = onReject;
+    });
+    const load = { url, promise, resolve, reject };
+    linkLoads.set(url, promise);
+    if (activeLinkLoads.size < MAX_ACTIVE_LINK_LOADS) startLinkLoad(load);
+    else queuedLinkLoads.push(load);
+    return promise;
+  }
+
+  function startLinkLoad(load: LinkLoad): void {
+    const key = load.url;
+    activeLinkLoads.set(key, load);
+    resolvePreview(load.url, { signal: linkAbort.signal }).then((preview) => {
+      if (closed) {
+        load.reject(new Error("Session is closed"));
+        return;
+      }
+      while (linkCache.size >= MAX_LINK_CACHE) {
+        const oldest = linkCache.keys().next().value;
+        if (oldest === undefined) break;
+        linkCache.delete(oldest);
+      }
+      linkCache.set(key, preview);
+      load.resolve(preview);
+    }, (error: unknown) => {
+      if (closed) load.reject(new Error("Session is closed"));
+      else load.reject(error instanceof Error ? error : new Error(String(error)));
+    })
+      .finally(() => {
+        activeLinkLoads.delete(key);
+        if (linkLoads.get(key) === load.promise) linkLoads.delete(key);
+        if (!closed) {
+          const next = queuedLinkLoads.shift();
+          if (next) startLinkLoad(next);
+        }
+      });
+  }
+
   async function start(): Promise<void> {
     if (startPromise) return startPromise;
     startPromise = (async () => {
@@ -402,6 +478,12 @@ export function createSession(options: SessionOptions): Session {
     for (const load of queuedImageLoads.splice(0)) load.reject(new Error("Session is closed"));
     activeImageLoads.clear();
     imageLoads.clear();
+    linkCache.clear();
+    for (const load of activeLinkLoads.values()) load.reject(new Error("Session is closed"));
+    for (const load of queuedLinkLoads.splice(0)) load.reject(new Error("Session is closed"));
+    activeLinkLoads.clear();
+    linkLoads.clear();
+    linkAbort.abort();
     readRequests.clear();
     socket?.close();
     await client.close();
@@ -430,6 +512,7 @@ export function createSession(options: SessionOptions): Session {
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     act,
     loadAttachment,
+    loadLinkPreview,
     start,
     close,
   };

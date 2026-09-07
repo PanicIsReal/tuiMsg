@@ -6,6 +6,7 @@ import { stripVTControlCharacters } from "node:util";
 import { App } from "../src/ui/App.tsx";
 import { emptyState, type AppState, type Chat, type Intent, type Message, type Session } from "../src/domain/model.ts";
 import { parseChatGuid, parseHandleAddress, parseMessageGuid } from "../src/domain/ids.ts";
+import { previewFromUrl } from "../src/links.ts";
 
 
 
@@ -58,6 +59,9 @@ const session: Session = {
   async loadAttachment(attachment) {
     if (attachment.guid === failedImageAttachment.guid) throw new Error("synthetic preview failure");
     return syntheticPng;
+  },
+  async loadLinkPreview(url) {
+    return previewFromUrl(url);
   },
   async start() {},
   async close() {},
@@ -138,6 +142,39 @@ for (const listener of listeners) listener();
 await setup.flush();
 await waitForImage();
 saveFrame("normal-conversation-120x30.txt", setup.captureCharFrame());
+
+const uniqueLinkUrl = "https://example.test/ui-verify-unique-link-9f3a2c";
+const linkMessageGuid = parseMessageGuid("link-message");
+const linkOnlyMessages: Message[] = [
+  { guid: linkMessageGuid, chatGuid: firstChat, kind: "text", from: friend, isFromMe: false, body: uniqueLinkUrl, attachments: [], sentAt: Date.now(), status: "sent" },
+];
+state = {
+  ...state,
+  selected: firstChat,
+  input: { kind: "transcript", chatGuid: firstChat },
+  messages: new Map(state.messages).set(firstChat, linkOnlyMessages),
+  messageCursor: new Map(state.messageCursor).set(firstChat, linkMessageGuid),
+};
+for (const listener of listeners) listener();
+await setup.flush();
+await delay(200);
+assert.match(setup.captureCharFrame(), new RegExp(uniqueLinkUrl.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+const openUrlBefore = intents.filter((intent) => intent.type === "open-url").length;
+setup.mockInput.pressKey("o");
+await setup.flush();
+assert.equal(intents.filter((intent) => intent.type === "open-url").length, openUrlBefore + 1);
+assert.ok(intents.some((intent) => intent.type === "open-url" && intent.url === uniqueLinkUrl));
+state = {
+  ...state,
+  messages: new Map(state.messages).set(firstChat, [
+    { guid: firstMessage, chatGuid: firstChat, kind: "text", from: friend, isFromMe: false, body: "Can you bring the project notes tomorrow?", attachments: [{ guid: "attachment-one", name: "sample.png", mime: "image/png", bytes: syntheticPng.byteLength }], sentAt: Date.now() - 5_000, status: "sent" },
+    { guid: secondMessage, tempGuid: secondMessage, chatGuid: firstChat, kind: "text", from: me, isFromMe: true, body: "Yes, I have them ready.", attachments: [], sentAt: Date.now(), status: "uncertain" },
+  ]),
+  messageCursor: new Map(state.messageCursor).set(firstChat, firstMessage),
+};
+for (const listener of listeners) listener();
+await setup.flush();
+await waitForImage();
 setup.resize(260, 40);
 await setup.flush();
 const wideFrame = setup.captureCharFrame();

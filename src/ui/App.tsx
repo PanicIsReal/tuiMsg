@@ -7,6 +7,7 @@ import type { Attachment, Chat, InputMode, Message, Pane, Reaction, Session } fr
 import { draftFor, privateApiAvailable } from "../domain/model.ts";
 import type { MessageGuid } from "../domain/ids.ts";
 import { sortedChats } from "../domain/view.ts";
+import { parseHttpUrls } from "../links.ts";
 import { Composer, composerHeight } from "./Composer.tsx";
 import { Help } from "./Help.tsx";
 import { List } from "./List.tsx";
@@ -77,7 +78,9 @@ function AppContent({ session }: AppProps) {
                     onSelect={(messageGuid) => { if (input.kind === "list" || input.kind === "transcript" || input.kind === "composer") session.act({ type: "select-message", chatGuid: selected.guid, messageGuid }); }}
                     onHistory={(mode) => session.act({ type: "load-history", chatGuid: selected.guid, mode })}
                     loadAttachment={input.kind === "list" || input.kind === "transcript" || input.kind === "composer" ? session.loadAttachment : undefined}
+                    loadLinkPreview={input.kind === "list" || input.kind === "transcript" || input.kind === "composer" ? session.loadLinkPreview : undefined}
                     onViewAttachment={(attachment) => { if (input.kind === "list" || input.kind === "transcript" || input.kind === "composer") viewAttachment(session, attachment, { kind: "transcript", chatGuid: selected.guid }); }}
+                    onOpenUrl={(url) => { if (input.kind === "list" || input.kind === "transcript" || input.kind === "composer") session.act({ type: "open-url", url }); }}
                     onRetryRead={() => session.act({ type: "retry-read", chatGuid: selected.guid })} />
                   <Composer key={selected.guid} draft={draftFor(state, selected.guid)} service={selected.service} focused={input.kind === "composer"}
                     onChange={(text) => session.act({ type: "draft-set", chatGuid: selected.guid, text })}
@@ -224,9 +227,17 @@ function routeTranscript(key: KeyEvent, context: RouteContext): boolean {
     const attachment = message.attachments.find(isImageAttachment);
     if (attachment) viewAttachment(session, attachment, { kind: "transcript", chatGuid });
   }
-  else if ((key.name === "o" || key.name === "s") && message?.kind === "text" && message.attachments.length) {
+  else if (key.name === "o" && message?.kind === "text") {
+    const url = parseHttpUrls(message.body)[0];
+    if (url) session.act({ type: "open-url", url });
+    else if (message.attachments.length) {
+      const attachment = message.attachments.find(isImageAttachment) ?? message.attachments[0]!;
+      session.act({ type: "attachment", attachment, action: "open" });
+    } else return false;
+  }
+  else if (key.name === "s" && message?.kind === "text" && message.attachments.length) {
     const attachment = message.attachments.find(isImageAttachment) ?? message.attachments[0]!;
-    session.act({ type: "attachment", attachment, action: key.name === "o" ? "open" : "save" });
+    session.act({ type: "attachment", attachment, action: "save" });
   }
   else if (key.name === "a" && message?.kind === "text" && message.attachments.length) session.act({ type: "input", input: { kind: "attachments", chatGuid, messageGuid: message.guid, choice: 0 } });
   else if (key.name === "!" && message?.kind === "text" && (message.status === "failed" || message.status === "uncertain")) {

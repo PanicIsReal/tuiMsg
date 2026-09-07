@@ -1,7 +1,7 @@
 import { useMouse } from "./mouse.tsx";
 import { useLayoutEffect, useRef, useState } from "react";
 import { Box, Text, useInput, useBoxMetrics, type DOMElement } from "ink";
-import type { Attachment, HistoryState, Message } from "../domain/model.ts";
+import type { Attachment, HistoryState, HttpUrl, LinkPreview, Message } from "../domain/model.ts";
 import type { ChatGuid, MessageGuid } from "../domain/ids.ts";
 import { foldTapbacks, lastOwnReceipt, sameSender } from "../domain/view.ts";
 import { Bubble } from "./Bubble.tsx";
@@ -14,7 +14,9 @@ export type TranscriptProps = {
   onSelect: (messageGuid: MessageGuid) => void;
   onHistory: (mode: "latest" | "older") => void; onRetryRead: () => void;
   loadAttachment?: ((attachment: Attachment) => Promise<Uint8Array>) | undefined;
+  loadLinkPreview?: ((url: HttpUrl) => Promise<LinkPreview>) | undefined;
   onViewAttachment?: ((attachment: Attachment) => void) | undefined;
+  onOpenUrl?: ((url: HttpUrl) => void) | undefined;
 };
 export function Transcript(props: TranscriptProps) {
   const viewport = useRef<DOMElement>(null);
@@ -91,7 +93,7 @@ export function Transcript(props: TranscriptProps) {
           if (row.kind === "day") return <Box key={row.key} paddingLeft={2} marginTop={1} flexShrink={0}><Text color={colors.secondary}>{row.label}</Text></Box>;
           const preceding = rows[index - 1];
           return <Box key={row.key} flexShrink={0} ref={element => { if (element) elements.current.set(row.message.guid, element); else elements.current.delete(row.message.guid); }}>
-            <Bubble message={row.message} chips={row.chips} grouped={preceding?.kind === "message" && sameSender(preceding.message, row.message)} showReceipt={lastOwn?.guid === row.message.guid} selected={selected === row.message.guid} width={props.width - 4} onSelect={() => props.onSelect(row.message.guid)} onViewAttachment={props.onViewAttachment} loadAttachment={props.loadAttachment} />
+            <Bubble message={row.message} chips={row.chips} grouped={preceding?.kind === "message" && sameSender(preceding.message, row.message)} showReceipt={lastOwn?.guid === row.message.guid} selected={selected === row.message.guid} width={props.width - 4} onSelect={() => props.onSelect(row.message.guid)} onViewAttachment={props.onViewAttachment} onOpenUrl={props.onOpenUrl} loadAttachment={props.loadAttachment} loadLinkPreview={props.loadLinkPreview} />
           </Box>;
         })}
         {props.history.kind === "ready" && !props.messages.length ? <Text color={colors.secondary}> No messages yet</Text> : null}
