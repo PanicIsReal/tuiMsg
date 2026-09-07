@@ -21,21 +21,19 @@ function dayLabel(ms: number): string {
 }
 
 export function foldTapbacks(messages: Message[]): ThreadRow[] {
-  const chips = new Map<string, Map<Reaction, TapbackChip>>();
+  const memberships = new Map<string, Map<Reaction, Map<string, boolean>>>();
   for (const message of messages) {
     if (message.kind !== "tapback") continue;
-    const bucket = chips.get(message.target) ?? new Map();
+    const bucket = memberships.get(message.target) ?? new Map();
+    const senders = bucket.get(message.reaction) ?? new Map();
     if (message.removed) {
-      bucket.delete(message.reaction);
+      senders.delete(message.from.address);
     } else {
-      const existing = bucket.get(message.reaction);
-      bucket.set(message.reaction, {
-        reaction: message.reaction,
-        count: (existing?.count ?? 0) + 1,
-        fromMe: existing?.fromMe || message.isFromMe,
-      });
+      senders.set(message.from.address, message.isFromMe);
     }
-    chips.set(message.target, bucket);
+    if (senders.size === 0) bucket.delete(message.reaction);
+    else bucket.set(message.reaction, senders);
+    memberships.set(message.target, bucket);
   }
 
   const rows: ThreadRow[] = [];
@@ -47,12 +45,12 @@ export function foldTapbacks(messages: Message[]): ThreadRow[] {
       rows.push({ kind: "day", key: `day-${key}`, label: dayLabel(message.sentAt) });
       lastDay = key;
     }
-    const chipMap = chips.get(message.guid);
+    const chipMap = memberships.get(message.guid);
     const list: TapbackChip[] = [];
     if (chipMap) {
       for (const reaction of CHIP_ORDER) {
-        const chip = chipMap.get(reaction);
-        if (chip) list.push(chip);
+        const senders = chipMap.get(reaction);
+        if (senders) list.push({ reaction, count: senders.size, fromMe: [...senders.values()].some(Boolean) });
       }
     }
     rows.push({ kind: "message", key: message.guid, message, chips: list });

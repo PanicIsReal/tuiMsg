@@ -1,2 +1,2 @@
 #!/usr/bin/env bun
-import "../src/cli.tsx";
+import "../dist/cli.js";

@@ -1,146 +1,317 @@
-import { useCallback, useMemo, useRef } from "react";
-import { useKeyboard } from "@opentui/react";
-import type { AppEvent, AppState, Chat } from "../domain/model.ts";
+import { MouseProvider } from "./mouse.tsx";
+import { Box, Text, useInput, useWindowSize, type Key } from "ink";
+import { ImageViewer } from "./ImagePreview.tsx";
+import { isImageAttachment } from "../attachments.ts";
+import { useMemo, useSyncExternalStore } from "react";
+import type { Attachment, Chat, InputMode, Message, Pane, Reaction, Session } from "../domain/model.ts";
+import { draftFor, privateApiAvailable } from "../domain/model.ts";
+import type { MessageGuid } from "../domain/ids.ts";
 import { sortedChats } from "../domain/view.ts";
-import { List } from "./List.tsx";
-import { Transcript } from "./Transcript.tsx";
-import { Composer } from "./Composer.tsx";
+import { Composer, composerHeight } from "./Composer.tsx";
 import { Help } from "./Help.tsx";
+import { List } from "./List.tsx";
+import { AttachmentModal, ConfirmModal, NewChatModal, ReactionModal, SearchModal } from "./Modals.tsx";
+import { Transcript } from "./Transcript.tsx";
 import { colors } from "./theme.ts";
 
-export type AppProps = {
-  state: AppState
-  dispatch: (event: AppEvent) => void
-  onSend: (chat: Chat, text: string) => void
-  onYank: (text: string) => void
-};
+const REACTIONS: Reaction[] = ["love", "like", "dislike", "laugh", "emphasize", "question"];
+export type AppProps = { session: Session };
 
 export function App(props: AppProps) {
-  const { state, dispatch } = props;
-  const selectedRef = useRef(state.selected);
-  selectedRef.current = state.selected;
+  return <MouseProvider><AppContent {...props} /></MouseProvider>;
+}
 
-  const chats = useMemo(
-    () => sortedChats(state.chats, state.search),
-    [state.chats, state.search],
-  );
+function AppContent({ session }: AppProps) {
+  const state = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
+  const { columns, rows } = useWindowSize();
+  const size = { width: columns, height: rows };
+  const chats = useMemo(() => sortedChats(state.chats, state.search), [state.chats, state.search]);
   const selected = state.selected ? state.chats.get(state.selected) : undefined;
-  const messages = state.selected ? (state.messages.get(state.selected) ?? []) : [];
-  const typing = state.selected ? Boolean(state.typing.get(state.selected)) : false;
+  const messages = state.selected ? state.messages.get(state.selected) ?? [] : [];
+  const input = state.input;
+  const pane = paneFor(input);
+  const narrow = size.width < 72;
+  const tiny = size.width < 38 || size.height < 12;
 
-  const moveList = useCallback(
-    (delta: number) => {
-      if (chats.length === 0) return;
-      const index = Math.max(
-        0,
-        chats.findIndex((c) => c.guid === state.selected),
-      );
-      const next = chats[Math.min(chats.length - 1, Math.max(0, index + delta))];
-      if (next) dispatch({ type: "select-chat", chatGuid: next.guid });
-    },
-    [chats, dispatch, state.selected],
-  );
+  useInput((input, key) => routeKey(keyEvent(input, key), {
+    state, chats, selected, messages, session, tiny,
+  }));
 
-  useKeyboard((key) => {
-    if (key.name === "q" && state.overlay !== "none" && state.focus !== "composer") {
-      dispatch({ type: "overlay", overlay: "none" });
-      return;
-    }
-    if (state.overlay === "help" && key.name === "escape") {
-      dispatch({ type: "overlay", overlay: "none" });
-      return;
-    }
-    if (key.sequence === "?" || (key.shift && key.name === "/")) {
-      dispatch({ type: "overlay", overlay: state.overlay === "help" ? "none" : "help" });
-      return;
-    }
-    if (key.name === "escape") {
-      if (state.overlay !== "none") {
-        dispatch({ type: "overlay", overlay: "none" });
-        return;
-      }
-      if (state.focus === "composer") {
-        dispatch({ type: "focus", focus: "transcript" });
-        return;
-      }
-      dispatch({ type: "focus", focus: "list" });
-      return;
-    }
-    if (key.name === "tab") {
-      const order = ["list", "transcript", "composer"] as const;
-      const i = order.indexOf(state.focus);
-      const next = order[(i + (key.shift ? order.length - 1 : 1)) % order.length];
-      if (next) dispatch({ type: "focus", focus: next });
-      return;
-    }
-    if (key.name === "/" && state.focus !== "composer") {
-      dispatch({ type: "overlay", overlay: "search" });
-      dispatch({ type: "focus", focus: "list" });
-      return;
-    }
-    if (key.name === "i" && state.focus !== "composer") {
-      dispatch({ type: "focus", focus: "composer" });
-      return;
-    }
-    if (state.focus === "list") {
-      if (key.name === "j" || key.name === "down") moveList(1);
-      if (key.name === "k" || key.name === "up") moveList(-1);
-      if (key.name === "return" && chats[0] && !state.selected) {
-        dispatch({ type: "select-chat", chatGuid: chats[0].guid });
-      }
-    }
-    if (key.name === "y" && state.focus === "transcript") {
-      const last = [...messages].reverse().find((m) => m.kind === "text");
-      if (last && last.kind === "text") props.onYank(last.body);
-    }
-  });
+  if (tiny) {
+    return (
+      <Box width={size.width} height={size.height} justifyContent="center" alignItems="center" backgroundColor={colors.canvas}>
+        <Box borderStyle="round" borderBackgroundColor={colors.canvas} borderColor={colors.warning} padding={1} flexDirection="column">
+          <Text><Text bold color={colors.text}>Terminal too small</Text></Text>
+          <Text><Text color={colors.secondary}>Resize to at least 38 × 12</Text></Text>
+          <Text><Text color={colors.secondary}>Current size {size.width} × {size.height} · q quits</Text></Text>
+        </Box>
+      </Box>
+    );
+  }
+
+  const showList = !narrow || pane.kind === "list" || input.kind === "search" || input.kind === "new-chat";
+  const showConversation = !narrow || !showList;
+  const listWidth = narrow ? size.width : Math.min(34, Math.max(27, Math.floor(size.width * 0.28)));
+  const conversationWidth = narrow ? size.width : size.width - listWidth;
+  const laneWidth = Math.min(100, conversationWidth);
+  const history = selected ? state.history.get(selected.guid) ?? { kind: "unloaded" as const } : { kind: "unloaded" as const };
+  const cursor = selected ? state.messageCursor.get(selected.guid) ?? null : null;
 
   return (
-    <box flexDirection="column" flexGrow={1} backgroundColor={colors.canvas}>
-      <box flexDirection="row" flexGrow={1}>
-        <List
-          chats={chats}
-          selected={state.selected}
-          search={state.search}
-          searchFocused={state.overlay === "search"}
-        />
-        <box flexGrow={1} flexDirection="column" backgroundColor={colors.canvas}>
-          {selected ? (
-            <Transcript title={selected.title} messages={messages} typing={typing} />
-          ) : (
-            <box flexGrow={1} justifyContent="center" alignItems="center">
-              <text>
-                <span fg={colors.secondary}>Select a conversation</span>
-              </text>
-            </box>
-          )}
-          <Composer
-            value={state.composer}
-            protocol={selected?.service ?? "iMessage"}
-            focused={state.focus === "composer"}
-            onChange={(text) => dispatch({ type: "composer-set", text })}
-            onSubmit={() => {
-              if (!selected || state.composer.trim().length === 0) return;
-              props.onSend(selected, state.composer);
-            }}
-          />
-        </box>
-      </box>
-      <box height={1} paddingLeft={1} backgroundColor={colors.listBg}>
-        <text>
-          <span fg={colors.secondary}>
-            {state.connection}
-            {state.capabilities.helperConnected ? "  private-api" : ""}
-            {"   ? help"}
-            {state.copiedAt ? "   Copied" : ""}
-          </span>
-        </text>
-      </box>
-      {state.overlay === "help" ? (
-        <box position="absolute" left={8} top={4}>
-          <Help />
-        </box>
-      ) : null}
-    </box>
+    <Box flexDirection="column" width={size.width} height={size.height} backgroundColor={colors.canvas}>
+      <Box flexDirection="row" height={size.height - 1} flexShrink={0}>
+        {showList ? <List chats={chats} selected={state.selected} cursor={state.listCursor} search={state.search}
+          focused={input.kind === "list"} width={listWidth} height={size.height - 1} status={state.chatsStatus}
+          onMove={(delta) => session.act({ type: "move-list", delta })}
+          onOpen={(chatGuid) => { if (input.kind === "list" || input.kind === "transcript" || input.kind === "composer") session.act({ type: "open-chat", chatGuid }); }} /> : null}
+        {showConversation ? (
+          <Box width={conversationWidth} alignItems="center" flexDirection="column">
+            <Box width={laneWidth} flexDirection="column" height={size.height - 1}>
+              {selected ? (
+                <>
+                  <Transcript chatGuid={selected.guid} title={selected.title} messages={messages}
+                    height={size.height - 1 - composerHeight(draftFor(state, selected.guid), input.kind === "composer")} width={laneWidth}
+                    typing={Boolean(state.typing.get(selected.guid))} focused={input.kind === "transcript"}
+                    cursor={cursor} history={history} readError={state.readPending.get(selected.guid) ?? null}
+                    onSelect={(messageGuid) => { if (input.kind === "list" || input.kind === "transcript" || input.kind === "composer") session.act({ type: "select-message", chatGuid: selected.guid, messageGuid }); }}
+                    onHistory={(mode) => session.act({ type: "load-history", chatGuid: selected.guid, mode })}
+                    loadAttachment={input.kind === "list" || input.kind === "transcript" || input.kind === "composer" ? session.loadAttachment : undefined}
+                    onViewAttachment={(attachment) => { if (input.kind === "list" || input.kind === "transcript" || input.kind === "composer") viewAttachment(session, attachment, { kind: "transcript", chatGuid: selected.guid }); }}
+                    onRetryRead={() => session.act({ type: "retry-read", chatGuid: selected.guid })} />
+                  <Composer key={selected.guid} draft={draftFor(state, selected.guid)} service={selected.service} focused={input.kind === "composer"}
+                    onChange={(text) => session.act({ type: "draft-set", chatGuid: selected.guid, text })}
+                    onSubmit={() => session.act({ type: "send", chatGuid: selected.guid })}
+                    onEscape={() => session.act({ type: "input", input: { kind: "transcript", chatGuid: selected.guid } })} />
+                </>
+              ) : (
+                <Box flexGrow={1} justifyContent="center" alignItems="center">
+                  <Box flexDirection="column" alignItems="center">
+                    <Text><Text bold color={colors.text}>Choose a conversation</Text></Text>
+                    <Text><Text color={colors.secondary}>Enter opens the highlighted chat · n starts a new one</Text></Text>
+                  </Box>
+                </Box>
+              )}
+            </Box>
+          </Box>
+        ) : null}
+      </Box>
+      <StatusBar state={state} narrow={narrow} />
+      <Overlay input={input} state={state} messages={messages} session={session} width={size.width} height={size.height} />
+    </Box>
   );
+}
+
+type RouteContext = {
+  state: ReturnType<Session["getSnapshot"]>;
+  chats: ReturnType<typeof sortedChats>;
+  selected: Chat | undefined;
+  messages: Message[];
+  session: Session;
+  tiny: boolean;
+};
+
+function routeKey(key: KeyEvent, context: RouteContext): void {
+  const { state, session } = context;
+  const input = state.input;
+  if (key.ctrl && key.name === "c") {
+    session.act({ type: "quit" });
+    return;
+  }
+  if (context.tiny && key.name === "q") {
+    session.act({ type: "quit" });
+    return;
+  }
+  if (input.kind === "image") {
+    if (key.name === "escape" || key.name === "q") session.act({ type: "input", input: input.returnTo });
+    else if (key.name === "o" || key.name === "s") session.act({ type: "attachment", attachment: input.attachment, action: key.name === "o" ? "open" : "save" });
+    return;
+  }
+  if (input.kind === "help") {
+    if (key.name === "escape" || key.sequence === "?") {
+      session.act({ type: "input", input: input.returnTo });
+    }
+    return;
+  }
+  if (input.kind === "search") {
+    if (key.name === "escape") { session.act({ type: "input", input: input.returnTo }); }
+    return;
+  }
+  if (input.kind === "new-chat") {
+    if (key.name === "escape") { session.act({ type: "input", input: { kind: "list" } }); }
+    else if (key.name === "tab") { session.act({ type: "input", input: { ...input, field: input.field === "addresses" ? "text" : "addresses" } }); }
+    else if (key.ctrl && key.name === "t") { session.act({ type: "input", input: { ...input, service: input.service === "iMessage" ? "SMS" : "iMessage" } }); }
+    else if (key.ctrl && key.name === "s") { submitNewChat(input, session); }
+    return;
+  }
+  if (input.kind === "tapback") {
+    const delta = key.name === "left" || key.name === "k" ? -1 : key.name === "right" || key.name === "j" ? 1 : 0;
+    const numeric = /^[1-6]$/.test(key.sequence) ? Number(key.sequence) - 1 : -1;
+    const choice = Number.isInteger(numeric) && numeric >= 0 && numeric < REACTIONS.length ? numeric : (input.choice + delta + REACTIONS.length) % REACTIONS.length;
+    if (choice !== input.choice) session.act({ type: "input", input: { ...input, choice } });
+    if (key.name === "return" || key.name === "x") {
+      session.act({ type: "react", chatGuid: input.chatGuid, messageGuid: input.messageGuid, reaction: REACTIONS[choice]!, remove: key.name === "x" });
+      session.act({ type: "input", input: { kind: "transcript", chatGuid: input.chatGuid } });
+    } else if (key.name === "escape") session.act({ type: "input", input: { kind: "transcript", chatGuid: input.chatGuid } });
+    return;
+  }
+  if (input.kind === "attachments") {
+    const attachments = attachmentsFor(context.messages, input.messageGuid);
+    const delta = key.name === "up" || key.name === "k" ? -1 : key.name === "down" || key.name === "j" ? 1 : 0;
+    const choice = attachments.length ? (input.choice + delta + attachments.length) % attachments.length : 0;
+    if (choice !== input.choice) session.act({ type: "input", input: { ...input, choice } });
+    const attachment = attachments[choice];
+    if (attachment && (key.name === "v" || key.name === "return")) viewAttachment(session, attachment, { kind: "transcript", chatGuid: input.chatGuid });
+    if (attachment && (key.name === "o" || key.name === "s")) session.act({ type: "attachment", attachment, action: key.name === "o" ? "open" : "save" });
+    if (key.name === "escape") session.act({ type: "input", input: { kind: "transcript", chatGuid: input.chatGuid } });
+    return;
+  }
+  if (input.kind === "retry-confirm") {
+    if (key.name === "y") session.act({ type: "retry-send", tempGuid: input.tempGuid, confirmed: true });
+    if (key.name === "y" || key.name === "n" || key.name === "escape") session.act({ type: "input", input: input.returnTo });
+    return;
+  }
+
+  if (input.kind !== "composer" && (key.sequence === "?" || key.shift && key.name === "/")) {
+    session.act({ type: "input", input: { kind: "help", returnTo: input } });
+    return;
+  }
+  if (input.kind !== "composer" && key.name === "q") { session.act({ type: "quit" }); return; }
+  if (key.name === "tab") { cyclePane(input, state.selected, session); return; }
+  if (input.kind !== "composer" && key.name === "/") {
+    session.act({ type: "input", input: { kind: "search", returnTo: input } }); return;
+  }
+  if (input.kind !== "composer" && key.name === "n") {
+    session.act({ type: "input", input: { kind: "new-chat", addresses: "", text: "", service: "iMessage", field: "addresses", busy: false, error: null } }); return;
+  }
+  if (input.kind === "list") routeList(key, context);
+  else if (input.kind === "transcript") routeTranscript(key, context);
+  else if (input.kind === "composer" && key.name === "escape") session.act({ type: "input", input: { kind: "transcript", chatGuid: input.chatGuid } });
+}
+
+function routeList(key: KeyEvent, context: RouteContext): boolean {
+  const { state, session, chats } = context;
+  if (key.name === "j" || key.name === "down") session.act({ type: "move-list", delta: 1 });
+  else if (key.name === "k" || key.name === "up") session.act({ type: "move-list", delta: -1 });
+  else if (key.name === "return") {
+    const chat = chats.find((item) => item.guid === state.listCursor) ?? chats[0];
+    if (chat) session.act({ type: "open-chat", chatGuid: chat.guid });
+  } else if (key.name === "r" && (key.shift || state.chatsStatus === "error")) session.act({ type: "refresh" });
+  else return false;
+  return true;
+}
+
+function routeTranscript(key: KeyEvent, context: RouteContext): boolean {
+  const { state, session, selected, messages } = context;
+  if (!selected) return false;
+  const chatGuid = selected.guid;
+  const message = selectedMessage(state.messageCursor.get(chatGuid), messages);
+  if (key.name === "j" || key.name === "down") session.act({ type: "move-message", chatGuid, delta: 1 });
+  else if (key.name === "k" || key.name === "up") session.act({ type: "move-message", chatGuid, delta: -1 });
+  else if (key.name === "escape") session.act({ type: "input", input: { kind: "list" } });
+  else if (key.name === "i" || key.name === "return") session.act({ type: "input", input: { kind: "composer", chatGuid } });
+  else if (key.name === "g") session.act({ type: "load-history", chatGuid, mode: "older" });
+  else if (key.name === "r" && key.shift && state.history.get(chatGuid)?.kind === "error") {
+    const history = state.history.get(chatGuid);
+    if (history?.kind === "error") session.act({ type: "load-history", chatGuid, mode: history.mode });
+  }
+  else if (key.name === "r" && message) {
+    session.act({ type: "reply", chatGuid, messageGuid: message.guid });
+    session.act({ type: "input", input: { kind: "composer", chatGuid } });
+  } else if (key.name === "y" && message?.kind === "text") session.act({ type: "copy", text: message.body });
+  else if (key.name === "t" && message) session.act({ type: "input", input: { kind: "tapback", chatGuid, messageGuid: message.guid, choice: 0 } });
+  else if (key.name === "v" && message?.kind === "text") {
+    const attachment = message.attachments.find(isImageAttachment);
+    if (attachment) viewAttachment(session, attachment, { kind: "transcript", chatGuid });
+  }
+  else if ((key.name === "o" || key.name === "s") && message?.kind === "text" && message.attachments.length) {
+    const attachment = message.attachments.find(isImageAttachment) ?? message.attachments[0]!;
+    session.act({ type: "attachment", attachment, action: key.name === "o" ? "open" : "save" });
+  }
+  else if (key.name === "a" && message?.kind === "text" && message.attachments.length) session.act({ type: "input", input: { kind: "attachments", chatGuid, messageGuid: message.guid, choice: 0 } });
+  else if (key.name === "!" && message?.kind === "text" && (message.status === "failed" || message.status === "uncertain")) {
+    session.act({ type: "input", input: { kind: "retry-confirm", tempGuid: message.tempGuid ?? message.guid, returnTo: { kind: "transcript", chatGuid } } });
+  } else if (key.name === "m" && state.readPending.get(chatGuid)) session.act({ type: "retry-read", chatGuid });
+  else return false;
+  return true;
+}
+
+function cyclePane(input: Pane, selected: ReturnType<Session["getSnapshot"]>["selected"], session: Session): void {
+  if (!selected) { session.act({ type: "input", input: { kind: "list" } }); return; }
+  const next: Pane = input.kind === "list" ? { kind: "transcript", chatGuid: selected }
+    : input.kind === "transcript" ? { kind: "composer", chatGuid: selected } : { kind: "list" };
+  session.act({ type: "input", input: next });
+}
+
+function selectedMessage(cursor: MessageGuid | undefined, messages: RouteContext["messages"]) {
+  const selectable = messages.filter((message) => message.kind !== "tapback");
+  return selectable.find((message) => message.guid === cursor) ?? selectable.at(-1);
+}
+
+function attachmentsFor(messages: RouteContext["messages"], guid: MessageGuid): Attachment[] {
+  const message = messages.find((item) => item.guid === guid);
+  return message?.kind === "text" ? message.attachments : [];
+}
+
+function submitNewChat(input: Extract<InputMode, { kind: "new-chat" }>, session: Session): void {
+  if (input.busy || !input.addresses.trim() || !input.text.trim()) return;
+  session.act({ type: "create-chat", addresses: input.addresses, text: input.text, service: input.service });
+}
+
+function paneFor(input: InputMode): Pane {
+  if (input.kind === "help" || input.kind === "search" || input.kind === "image") return input.returnTo;
+  if (input.kind === "tapback" || input.kind === "attachments") return { kind: "transcript", chatGuid: input.chatGuid };
+  if (input.kind === "retry-confirm") return input.returnTo;
+  if (input.kind === "new-chat") return { kind: "list" };
+  return input;
+}
+
+function StatusBar(props: { state: ReturnType<Session["getSnapshot"]>; narrow: boolean }) {
+  const connectionColor = props.state.connection === "online" ? colors.outgoingSms
+    : props.state.connection === "auth-failed" ? colors.failed : colors.warning;
+  return (
+    <Box height={1} paddingLeft={1} paddingRight={1} flexDirection="row" justifyContent="space-between">
+      <Text><Text color={connectionColor}>● {props.state.connection}</Text><Text color={colors.secondary}>{privateApiAvailable(props.state.capabilities) ? " · private API" : ""}</Text></Text>
+      <Text><Text color={props.state.notice?.kind === "error" ? colors.failed : colors.secondary}>{props.state.notice?.text ?? (props.narrow ? "? help" : "Tab panes · ? help · q quit")}</Text></Text>
+    </Box>
+  );
+}
+
+function Overlay(props: {
+  input: InputMode; state: ReturnType<Session["getSnapshot"]>; messages: RouteContext["messages"];
+  session: Session; width: number; height: number;
+}) {
+  const style = {
+    position: "absolute" as const,
+    left: 0,
+    top: 0,
+    width: Math.max(1, props.width),
+    height: Math.max(1, props.height - 1),
+    alignItems: "center" as const,
+  };
+  let content: React.ReactNode = null;
+  if (props.input.kind === "image") content = <ImageViewer attachment={props.input.attachment} session={props.session} width={props.width - 4} height={props.height - 2} />;
+  else if (props.input.kind === "help") content = <Help width={Math.min(52, props.width - 4)} height={Math.min(14, props.height - 1)} />;
+  else if (props.input.kind === "search") content = <SearchModal value={props.state.search}
+    onChange={(text) => props.session.act({ type: "search-set", text })}
+    onClose={() => props.session.act({ type: "input", input: props.input.kind === "search" ? props.input.returnTo : { kind: "list" } })} />;
+  else if (props.input.kind === "new-chat") content = <NewChatModal mode={props.input}
+    privateApi={privateApiAvailable(props.state.capabilities)}
+    onChange={(input) => props.session.act({ type: "input", input })}
+    onCancel={() => props.session.act({ type: "input", input: { kind: "list" } })}
+    onSubmit={() => submitNewChat(props.input as Extract<InputMode, { kind: "new-chat" }>, props.session)} />;
+  else if (props.input.kind === "tapback") content = <ReactionModal choice={props.input.choice} />;
+  else if (props.input.kind === "attachments") content = <AttachmentModal attachments={attachmentsFor(props.messages, props.input.messageGuid)} choice={props.input.choice} />;
+  else if (props.input.kind === "retry-confirm") content = <ConfirmModal />;
+  return content ? <Box {...style} justifyContent="center" backgroundColor={colors.canvas}>{content}</Box> : null;
+}
+
+function viewAttachment(session: Session, attachment: Attachment, returnTo: Pane): void {
+  if (isImageAttachment(attachment)) session.act({ type: "input", input: { kind: "image", attachment, returnTo } });
+  else session.act({ type: "attachment", attachment, action: "open" });
+}
+
+type KeyEvent = { name: string; sequence: string; ctrl: boolean; shift: boolean };
+function keyEvent(input: string, key: Key): KeyEvent {
+  const name = key.upArrow ? "up" : key.downArrow ? "down" : key.leftArrow ? "left" : key.rightArrow ? "right" : key.return ? "return" : key.escape ? "escape" : key.tab ? "tab" : input.length === 1 ? input.toLowerCase() : "";
+  return { name, sequence: input, ctrl: key.ctrl, shift: key.shift };
 }

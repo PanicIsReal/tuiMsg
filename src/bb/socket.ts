@@ -1,16 +1,17 @@
 import { io, type Socket } from "socket.io-client";
 import { parseChatGuid } from "../domain/ids.ts";
-import { parseMessage } from "../domain/parse.ts";
+import { parseEnvelopeData, parseMessage } from "../domain/parse.ts";
 import type { AppEvent } from "../domain/model.ts";
 
 export type SocketHandlers = {
-  dispatch: (event: AppEvent) => void
+  dispatch: (event: AppEvent) => void;
+  diagnostic?: (error: Error) => void;
 };
 
 export function connectBbSocket(args: {
-  url: string
-  password: string
-  handlers: SocketHandlers
+  url: string;
+  password: string;
+  handlers: SocketHandlers;
 }): Socket {
   const socket = io(args.url, {
     transports: ["websocket", "polling"],
@@ -27,21 +28,43 @@ export function connectBbSocket(args: {
   socket.on("disconnect", () => {
     dispatch({ type: "connection", connection: "offline" });
   });
-  socket.on("connect_error", () => {
-    dispatch({ type: "connection", connection: "auth-failed" });
+  socket.on("connect_error", (error) => {
+    dispatch({
+      type: "connection",
+      connection: /unauthor|password|auth/i.test(error.message)
+        ? "auth-failed"
+        : "offline",
+    });
   });
   socket.on("new-message", (payload: unknown) => {
-    const message = parseMessage(payload);
-    if (message) dispatch({ type: "message-upserted", message });
+    try {
+      const message = parseMessage(parseEnvelopeData(payload));
+      if (message) dispatch({ type: "message-upserted", message });
+    } catch (error) {
+      args.handlers.diagnostic?.(
+        error instanceof Error ? error : new Error(String(error)),
+      );
+    }
   });
   socket.on("updated-message", (payload: unknown) => {
-    const message = parseMessage(payload);
-    if (message) dispatch({ type: "message-upserted", message });
+    try {
+      const message = parseMessage(parseEnvelopeData(payload));
+      if (message) dispatch({ type: "message-upserted", message });
+    } catch (error) {
+      args.handlers.diagnostic?.(
+        error instanceof Error ? error : new Error(String(error)),
+      );
+    }
   });
   socket.on("typing-indicator", (payload: unknown) => {
     if (typeof payload !== "object" || payload === null) return;
     const record = payload as Record<string, unknown>;
-    const raw = typeof record.chatGuid === "string" ? record.chatGuid : typeof record.guid === "string" ? record.guid : "";
+    const raw =
+      typeof record.chatGuid === "string"
+        ? record.chatGuid
+        : typeof record.guid === "string"
+          ? record.guid
+          : "";
     if (raw.length === 0) return;
     try {
       dispatch({

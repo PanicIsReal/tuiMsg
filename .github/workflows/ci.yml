@@ -17,3 +17,7 @@ jobs:
       - run: pnpm install
       - run: pnpm typecheck
       - run: pnpm test
+      - run: pnpm test:colors
+      - run: pnpm build
+      - run: pnpm smoke
+      - run: pnpm smoke:images

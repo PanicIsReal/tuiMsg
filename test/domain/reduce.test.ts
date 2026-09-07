@@ -13,7 +13,7 @@ function text(partial: Partial<TextMessage> & Pick<TextMessage, "guid" | "body">
     sentAt: 1,
     from: { address: parseHandleAddress("+15551234567"), service: "iMessage" },
     isFromMe: false,
-    tapbacks: [],
+    attachments: [],
     status: "sent",
     ...partial,
   };
@@ -38,7 +38,7 @@ describe("reduce", () => {
         },
       ],
     });
-    state = reduce(state, { type: "select-chat", chatGuid });
+    state = reduce(state, { type: "open-chat", chatGuid });
     state = reduce(state, {
       type: "send-requested",
       chatGuid,
@@ -75,7 +75,7 @@ describe("reduce", () => {
       message: text({ guid: parseMessageGuid("m1"), body: "yo" }),
     });
     expect(state.chats.get(chatGuid)?.unreadCount).toBe(1);
-    state = reduce(state, { type: "select-chat", chatGuid });
+    state = reduce(state, { type: "open-chat", chatGuid });
     expect(state.chats.get(chatGuid)?.unreadCount).toBe(0);
   });
 
@@ -107,6 +107,26 @@ describe("reduce", () => {
       ],
     });
     expect(state.chats.get(chatGuid)?.title).toBe("Jane Doe");
+  });
+
+  it("matches formatted phones and email case without guessing country codes", () => {
+    let state = emptyState();
+    const formattedGuid = parseChatGuid("iMessage;+;+15551234567");
+    const emailGuid = parseChatGuid("iMessage;+;jane.doe@example.com");
+    const localGuid = parseChatGuid("iMessage;+;5551234567");
+    state = reduce(state, { type: "chats-loaded", chats: [
+      { guid: formattedGuid, kind: "dm", service: "iMessage", title: "+15551234567", participants: [{ address: parseHandleAddress("+15551234567"), service: "iMessage" }], unreadCount: 0, muted: false },
+      { guid: emailGuid, kind: "dm", service: "iMessage", title: "jane.doe@example.com", participants: [{ address: parseHandleAddress("jane.doe@example.com"), service: "iMessage" }], unreadCount: 0, muted: false },
+      { guid: localGuid, kind: "dm", service: "iMessage", title: "5551234567", participants: [{ address: parseHandleAddress("5551234567"), service: "iMessage" }], unreadCount: 0, muted: false },
+    ] });
+    state = reduce(state, { type: "contacts-loaded", contacts: [{
+      displayName: "Jane Doe",
+      phones: [parseHandleAddress("+1 (555) 123-4567")],
+      emails: [parseHandleAddress("Jane.Doe@Example.COM")],
+    }] });
+    expect(state.chats.get(formattedGuid)?.title).toBe("Jane Doe");
+    expect(state.chats.get(emailGuid)?.title).toBe("Jane Doe");
+    expect(state.chats.get(localGuid)?.title).toBe("5551234567");
   });
 });
 
