@@ -57,7 +57,7 @@ export function createSession(options: SessionOptions): Session {
   const imageCache = new Map<string, Uint8Array>();
   const imageLoads = new Map<string, Promise<Uint8Array>>();
   const activeImageLoads = new Set<string>();
-  let queuedImageLoad: ImageLoad | undefined;
+  const queuedImageLoads: ImageLoad[] = [];
   let imageCacheBytes = 0;
   let contactsLoad: Promise<void> | undefined;
   let serverWatermark = 0;
@@ -317,14 +317,7 @@ export function createSession(options: SessionOptions): Session {
     const load = { attachment, promise, resolve, reject };
     imageLoads.set(attachment.guid, promise);
     if (activeImageLoads.size < MAX_ACTIVE_IMAGE_LOADS) startImageLoad(load);
-    else {
-      const superseded = queuedImageLoad;
-      queuedImageLoad = load;
-      if (superseded) {
-        imageLoads.delete(superseded.attachment.guid);
-        superseded.reject(new Error("Image preview superseded by a newer request."));
-      }
-    }
+    else queuedImageLoads.push(load);
     return promise;
   }
 
@@ -353,10 +346,9 @@ export function createSession(options: SessionOptions): Session {
       .finally(() => {
         activeImageLoads.delete(guid);
         if (imageLoads.get(guid) === load.promise) imageLoads.delete(guid);
-        const next = queuedImageLoad;
-        if (!closed && next) {
-          queuedImageLoad = undefined;
-          startImageLoad(next);
+        if (!closed) {
+          const next = queuedImageLoads.shift();
+          if (next) startImageLoad(next);
         }
       });
   }
@@ -407,10 +399,7 @@ export function createSession(options: SessionOptions): Session {
     historyLoads.clear();
     imageCache.clear();
     imageCacheBytes = 0;
-    if (queuedImageLoad) {
-      queuedImageLoad.reject(new Error("Session is closed"));
-      queuedImageLoad = undefined;
-    }
+    for (const load of queuedImageLoads.splice(0)) load.reject(new Error("Session is closed"));
     activeImageLoads.clear();
     imageLoads.clear();
     readRequests.clear();

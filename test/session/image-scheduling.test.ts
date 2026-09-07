@@ -21,8 +21,8 @@ function deferredResponse() {
 }
 
 describe("image preview scheduling", () => {
-  it("runs two unique requests, keeps only the latest queued request, and preserves GUID deduplication", async () => {
-    const gates = [deferredResponse(), deferredResponse(), deferredResponse()];
+  it("loads all four visible photos in order with two active requests and GUID deduplication", async () => {
+    const gates = [deferredResponse(), deferredResponse(), deferredResponse(), deferredResponse()];
     let started = 0;
     let active = 0;
     let peakActive = 0;
@@ -41,15 +41,13 @@ describe("image preview scheduling", () => {
 
     const first = session.loadAttachment(attachment("first"));
     const second = session.loadAttachment(attachment("second"));
-    const superseded = session.loadAttachment(attachment("third"));
+    const third = session.loadAttachment(attachment("third"));
     const latest = session.loadAttachment(attachment("latest"));
     const duplicateLatest = session.loadAttachment(attachment("latest"));
-    const supersededResult = expect(superseded).rejects.toThrow("superseded");
     await Promise.resolve();
 
     expect(started).toBe(2);
     expect(peakActive).toBe(2);
-    await supersededResult;
 
     gates[0]!.resolve(new Response(new Uint8Array([1])));
     await first;
@@ -58,10 +56,17 @@ describe("image preview scheduling", () => {
     expect(peakActive).toBe(2);
 
     gates[1]!.resolve(new Response(new Uint8Array([2])));
-    gates[2]!.resolve(new Response(new Uint8Array([3])));
     await expect(second).resolves.toEqual(new Uint8Array([2]));
+    await Promise.resolve();
+    expect(started).toBe(4);
+    expect(peakActive).toBe(2);
+    gates[2]!.resolve(new Response(new Uint8Array([3])));
+    gates[3]!.resolve(new Response(new Uint8Array([4])));
+    await expect(third).resolves.toEqual(new Uint8Array([3]));
     const [latestBytes, duplicateBytes] = await Promise.all([latest, duplicateLatest]);
+    expect(latestBytes).toEqual(new Uint8Array([4]));
     expect(duplicateBytes).toBe(latestBytes);
+    expect(started).toBe(4);
     await session.close();
   });
 
@@ -76,7 +81,8 @@ describe("image preview scheduling", () => {
     const first = session.loadAttachment(attachment("first"));
     const second = session.loadAttachment(attachment("second"));
     const queued = session.loadAttachment(attachment("queued"));
-    const results = Promise.allSettled([first, second, queued]);
+    const nextQueued = session.loadAttachment(attachment("next-queued"));
+    const results = Promise.allSettled([first, second, queued, nextQueued]);
 
     await Promise.resolve();
     await session.close();
@@ -85,6 +91,7 @@ describe("image preview scheduling", () => {
     expect(settled.map((result) => result.status === "rejected" ? result.reason.message : "")).toEqual([
       expect.stringMatching(/closed/),
       expect.stringMatching(/closed/),
+      "Session is closed",
       "Session is closed",
     ]);
   });
