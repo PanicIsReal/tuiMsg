@@ -2,9 +2,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { FakeBb, type FakeChat, type FakeMessage } from "../../src/bb/fake.ts";
 import { BbClient } from "../../src/bb/rest.ts";
 import { parseChatGuid } from "../../src/domain/ids.ts";
-import type { AppEvent, Attachment } from "../../src/domain/model.ts";
+import type { AppEvent, Attachment, HttpUrl } from "../../src/domain/model.ts";
 import { createJournal } from "../../src/journal.ts";
 import type { Journal } from "../../src/journal.ts";
+import { parseHttpUrl } from "../../src/links.ts";
 import { createSession, type SessionOptions } from "../../src/session.ts";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -386,6 +387,72 @@ describe("session", () => {
     await eventually(() => [...session.getSnapshot().outbox.values()].some((item) => item.phase === "failed"));
     expect(fake.sent).toHaveLength(0);
     await expect(session.close()).rejects.toThrow("disk full");
+  });
+
+  it("opens URLs even when ssh is set and notices Opened.", async () => {
+    const opened: HttpUrl[] = [];
+    const session = createSession({
+      url: "http://127.0.0.1:1",
+      password: "test",
+      journal: memoryJournal(),
+      ssh: true,
+      openUrl: async (url) => { opened.push(url); },
+    });
+    const url = parseHttpUrl("https://example.test/from-ssh");
+    session.act({ type: "open-url", url });
+    await eventually(() => opened.length === 1);
+    expect(opened).toEqual([url]);
+    expect(session.getSnapshot().notice).toEqual({ kind: "info", text: "Opened." });
+    await session.close();
+  });
+
+  it("caches successful link previews and does not refetch on hit", async () => {
+    let requests = 0;
+    const url = parseHttpUrl("https://cache.test/item");
+    const session = createSession({
+      url: "http://127.0.0.1:1",
+      password: "test",
+      journal: memoryJournal(),
+      resolveLinkPreview: async (target) => {
+        requests += 1;
+        return { kind: "page", url: target, site: "cache.test", title: "Cached" };
+      },
+    });
+    const first = await session.loadLinkPreview(url);
+    const second = await session.loadLinkPreview(url);
+    expect(first).toEqual(second);
+    expect(requests).toBe(1);
+    await session.close();
+  });
+
+  it("coalesces in-flight link preview loads and retries after failure", async () => {
+    let requests = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const url = parseHttpUrl("https://coalesce.test/item");
+    const session = createSession({
+      url: "http://127.0.0.1:1",
+      password: "test",
+      journal: memoryJournal(),
+      resolveLinkPreview: async (target) => {
+        requests += 1;
+        if (requests === 1) {
+          await gate;
+          throw new Error("temporary link failure");
+        }
+        return { kind: "host", url: target, site: "coalesce.test" };
+      },
+    });
+    const first = session.loadLinkPreview(url);
+    const second = session.loadLinkPreview(url);
+    await Promise.resolve();
+    expect(requests).toBe(1);
+    release();
+    await expect(first).rejects.toThrow(/temporary link failure/);
+    await expect(second).rejects.toThrow(/temporary link failure/);
+    await expect(session.loadLinkPreview(url)).resolves.toEqual({ kind: "host", url, site: "coalesce.test" });
+    expect(requests).toBe(2);
+    await session.close();
   });
 
 });

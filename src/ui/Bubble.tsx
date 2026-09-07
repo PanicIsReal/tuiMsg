@@ -2,9 +2,11 @@ import stringWidth from "string-width";
 import { useMouse } from "./mouse.tsx";
 import { Box, Text, type DOMElement } from "ink";
 import { ImagePreview } from "./ImagePreview.tsx";
+import { LinkCard } from "./LinkCard.tsx";
 import { isImageAttachment } from "../attachments.ts";
 import { memo, useRef } from "react";
-import type { Attachment, Message, TapbackChip } from "../domain/model.ts";
+import type { Attachment, HttpUrl, LinkPreview, Message, TapbackChip } from "../domain/model.ts";
+import { linkCardLine, parseHttpUrls, previewFromUrl, splitHttpUrls } from "../links.ts";
 import { colors, reactionGlyph } from "./theme.ts";
 
 export type BubbleProps = {
@@ -15,8 +17,10 @@ export type BubbleProps = {
   selected: boolean;
   width: number;
   loadAttachment?: ((attachment: Attachment) => Promise<Uint8Array>) | undefined;
+  loadLinkPreview?: ((url: HttpUrl) => Promise<LinkPreview>) | undefined;
   onSelect: () => void;
   onViewAttachment?: ((attachment: Attachment) => void) | undefined;
+  onOpenUrl?: ((url: HttpUrl) => void) | undefined;
 };
 
 export const Bubble = memo(function Bubble(props: BubbleProps) {
@@ -37,16 +41,19 @@ export const Bubble = memo(function Bubble(props: BubbleProps) {
 
   const mine = message.isFromMe;
   const body = normalizeBody(message.body);
+  const hrefs = parseHttpUrls(body);
   const imageAttachments = message.attachments.filter(isImageAttachment);
   const sender = mine ? "You" : message.from.contact?.displayName ?? message.from.address;
   const timestamp = `${formatMessageTime(message.sentAt)}${message.from.service === "SMS" ? " · SMS" : ""}`;
   const attachmentLabels = message.attachments.map(attachment => `${isImageAttachment(attachment) ? "↗" : "↓"} ${attachment.name}  ${formatBytes(attachment.bytes)}`);
   const reactions = props.chips.map(chip => `${reactionGlyph[chip.reaction]}${chip.count > 1 ? ` ×${chip.count}` : ""}`).join("  ");
+  const firstLink = props.loadLinkPreview && hrefs[0] ? hrefs[0] : undefined;
   const naturalWidth = Math.max(
     stringWidth(`${sender}  ${timestamp}`),
     ...body.split("\n").map(line => stringWidth(line)),
     ...attachmentLabels.map(label => stringWidth(label)),
     stringWidth(reactions),
+    firstLink ? stringWidth(linkCardLine(previewFromUrl(firstLink))) : 0,
     props.showReceipt || ["pending", "failed", "uncertain"].includes(message.status) ? stringWidth(receiptLabel(message)) : 0,
     imageAttachments.length ? 48 : 1,
   );
@@ -57,7 +64,8 @@ export const Bubble = memo(function Bubble(props: BubbleProps) {
       {!props.grouped ? <Box height={1} flexShrink={0}>
         <Text wrap="truncate-end"><Text bold={!mine} color={mine ? colors.secondary : colors.text}>{sender}</Text><Text color={colors.subtle}>  {timestamp}</Text></Text>
       </Box> : null}
-      {body ? <Text color={colors.text}>{body}</Text> : null}
+      {body ? <MessageBody text={body} /> : null}
+      {firstLink && props.loadLinkPreview ? <LinkCard url={firstLink} width={contentWidth} delayMs={150} loadLinkPreview={props.loadLinkPreview} onOpen={() => props.onOpenUrl?.(firstLink)} /> : null}
       {props.loadAttachment ? imageAttachments.map(attachment => <ImagePreview key={attachment.guid} attachment={attachment} loadAttachment={props.loadAttachment!} width={Math.min(48, contentWidth)} height={props.width < 60 ? 6 : 10} delayMs={150} />) : null}
       {message.attachments.map((attachment, index) => <AttachmentLink key={attachment.guid} label={attachmentLabels[index] ?? attachment.name} onOpen={() => props.onViewAttachment?.(attachment)} />)}
       {!body && !message.attachments.length ? <Text color={colors.subtle}>Empty message</Text> : null}
@@ -67,6 +75,18 @@ export const Bubble = memo(function Bubble(props: BubbleProps) {
     {mine ? <Box width={2} flexShrink={0}><Text color={props.selected ? colors.focus : colors.subtle}>{props.selected ? " ‹" : "  "}</Text></Box> : null}
   </Box>;
 });
+
+function MessageBody(props: { text: string }) {
+  return (
+    <Text color={colors.text}>
+      {splitHttpUrls(props.text).map((part, index) =>
+        part.kind === "url"
+          ? <Text key={index} color={colors.accent} underline>{part.url}</Text>
+          : <Text key={index}>{part.text}</Text>,
+      )}
+    </Text>
+  );
+}
 
 function Receipt(props: { message: Extract<Message, { kind: "text" }> }) {
   const { message } = props;

@@ -6,7 +6,7 @@ const LINES = [
   "i compose · Esc back · Tab panes",
   "Ctrl+J / Shift+Enter newline",
   "y copy · r reply · t react",
-  "a files · v image · o open · s save",
+  "a files · v image · o open link/file · s save",
   "! retry · g older · m retry read",
   "/ search · n new · PgUp/PgDn scroll",
   "d / End latest · ? help · q quit",

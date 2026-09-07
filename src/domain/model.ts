@@ -9,6 +9,12 @@ export type Contact = { displayName: string; phones: HandleAddress[]; emails: Ha
 export type Handle = { address: HandleAddress; service: Service; contact?: Contact };
 export type TapbackChip = { reaction: Reaction; count: number; fromMe: boolean };
 export type Attachment = { guid: string; name: string; mime: string; bytes: number };
+/** http(s) URL taken from message text. Constructed only by parseHttpUrl / parseHttpUrls. */
+export type HttpUrl = string & { readonly __brand: "HttpUrl" };
+export type LinkPreview =
+  | { kind: "host"; url: HttpUrl; site: string }
+  | { kind: "page"; url: HttpUrl; site: string; title: string }
+  | { kind: "media"; url: HttpUrl; site: string; title: string; author: string };
 export type MessagePreview = { body: string; sentAt: number; isFromMe: boolean; guid?: MessageGuid };
 export type Chat = {
   guid: ChatGuid; kind: ChatKind; service: Service; title: string; participants: Handle[];
@@ -80,6 +86,7 @@ export type Intent =
   | { type: "react"; chatGuid: ChatGuid; messageGuid: MessageGuid; reaction: Reaction; remove: boolean }
   | { type: "create-chat"; addresses: string; text: string; service: Service }
   | { type: "attachment"; attachment: Attachment; action: "open" | "save" }
+  | { type: "open-url"; url: HttpUrl }
   | { type: "copy"; text: string }
   | { type: "notice"; notice: Notice | null }
   | { type: "quit" };
@@ -108,6 +115,7 @@ export type Session = {
   subscribe: (listener: () => void) => () => void;
   act: (intent: Intent) => void;
   loadAttachment: (attachment: Attachment) => Promise<Uint8Array>;
+  loadLinkPreview: (url: HttpUrl) => Promise<LinkPreview>;
   start: () => Promise<void>;
   close: () => Promise<void>;
 };
