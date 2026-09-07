@@ -24,15 +24,13 @@ export function Transcript(props: TranscriptProps) {
   const bottomRequested = useRef(false);
   const elements = useRef(new Map<MessageGuid, DOMElement>());
   const [scroll, setScroll] = useState(0);
-  const previous = useRef<{ chat: ChatGuid; cursor: MessageGuid | null; offset: number; height: number; width: number; maximum: number; lastGuid: MessageGuid | null; messageKeys: Set<MessageGuid> } | null>(null);
+  const previous = useRef<{ chat: ChatGuid; cursor: MessageGuid | null; offset: number; height: number; width: number; maximum: number; messageKeys: Set<MessageGuid> } | null>(null);
   const rows = foldTapbacks(props.messages);
   const lastOwn = lastOwnReceipt(props.messages);
   const latest = props.messages.findLast(message => message.kind !== "tapback")?.guid ?? null;
   const selected = props.cursor ?? latest;
   const selectedMessage = props.messages.find(message => message.guid === selected);
   const selectedKey = selectedMessage ? messageKey(selectedMessage) : selected;
-  const latestMessage = props.messages.findLast(message => message.kind !== "tapback");
-  const latestKey = latestMessage ? messageKey(latestMessage) : null;
   const viewportHeight = Math.max(1, props.height - 4 - (props.readError ? 1 : 0));
   const maximum = () => Math.max(0, (content.current?.yogaNode?.getComputedHeight() ?? 0) - viewportHeight);
   const scrollToBottom = () => {
@@ -70,7 +68,7 @@ export function Transcript(props: TranscriptProps) {
     setScroll(current => {
       if (requested || newOwnSend) return maximum();
       if (!saved || saved.chat !== props.chatGuid) return maximum();
-      if (saved.cursor === selectedKey && saved.lastGuid === latestKey && current >= saved.maximum) return maximum();
+      if (saved.cursor === selectedKey && current >= saved.maximum) return maximum();
       if (saved.cursor !== selectedKey || saved.width !== props.width) {
         if (height >= viewportHeight || top < current) return Math.min(maximum(), top);
         if (top + height > current + viewportHeight) return Math.min(maximum(), top + height - viewportHeight);
@@ -78,7 +76,7 @@ export function Transcript(props: TranscriptProps) {
       if (saved.cursor === selectedKey && saved.offset !== top) return Math.min(maximum(), Math.max(0, current + top - saved.offset));
       return Math.min(maximum(), current);
     });
-    previous.current = { chat: props.chatGuid, cursor: selectedKey, offset: top, height, width: props.width, maximum: maximum(), lastGuid: latestKey, messageKeys: new Set(props.messages.map(messageKey)) };
+    previous.current = { chat: props.chatGuid, cursor: selectedKey, offset: top, height, width: props.width, maximum: maximum(), messageKeys: new Set(props.messages.map(messageKey)) };
   }, [props.chatGuid, selected, props.messages, props.width, props.height, viewportHeight, contentMetrics.height]);
   return <Box width={props.width} height={props.height} flexShrink={0} flexDirection="column">
     <Box height={3} paddingTop={1} flexShrink={0} paddingX={4} flexDirection="column">
