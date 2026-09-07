@@ -325,6 +325,24 @@ state = {
 for (const listener of listeners) listener();
 setup.resize(50, 16);
 await setup.flush();
+assert.match(setup.captureCharFrame(), /Long message 27 anchor/);
+const sitting: Message = {
+  ...(longMessages[0] as Extract<Message, { kind: "text" }>),
+  guid: parseMessageGuid("sitting-tail"),
+  body: "SITTAIL99",
+  sentAt: Date.now() + 50,
+};
+state = { ...state, messages: new Map(state.messages).set(firstChat, [...longMessages, sitting]) };
+for (const listener of listeners) listener();
+await setup.flush();
+assert.match(setup.captureCharFrame(), /SITTAIL99/, "incoming while at the bottom must stay visible");
+state = {
+  ...state,
+  messages: new Map(state.messages).set(firstChat, longMessages),
+  messageCursor: new Map(state.messageCursor).set(firstChat, longMessages.at(-1)!.guid),
+};
+for (const listener of listeners) listener();
+await setup.flush();
 for (let index = 0; index < 20; index += 1) {
   setup.mockInput.pressKey("k");
   await setup.flush();
