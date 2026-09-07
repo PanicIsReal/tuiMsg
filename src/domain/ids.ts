@@ -25,6 +25,16 @@ export function parseHandleAddress(input: string): HandleAddress {
   return input as HandleAddress;
 }
 
+export function contactLookupKey(input: string): HandleAddress {
+  const address = input.trim();
+  if (address.includes("@")) return address.toLowerCase() as HandleAddress;
+  if (/^\+?[\d\s().-]+$/.test(address)) {
+    const prefix = address.startsWith("+") ? "+" : "";
+    return `${prefix}${address.replace(/\D/g, "")}` as HandleAddress;
+  }
+  return address as HandleAddress;
+}
+
 export function encodeChatPath(guid: ChatGuid): string {
   return encodeURIComponent(guid);
 }

@@ -6,7 +6,6 @@ import {
   type HandleAddress,
 } from "./ids.ts";
 import type {
-  AttachmentMessage,
   Chat,
   ChatKind,
   Contact,
@@ -19,9 +18,17 @@ import type {
   TextMessage,
 } from "./model.ts";
 
-const UUID_ONLY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export type ParseDiagnostic = {
+  kind: "chat" | "message" | "contact";
+  index?: number;
+  error: string;
+};
+export type DiagnosticSink = (diagnostic: ParseDiagnostic) => void;
 
-const REACTION_BY_TYPE: Record<number, { reaction: Reaction; removed: boolean }> = {
+const REACTION_BY_TYPE: Record<
+  number,
+  { reaction: Reaction; removed: boolean }
+> = {
   2000: { reaction: "love", removed: false },
   2001: { reaction: "like", removed: false },
   2002: { reaction: "dislike", removed: false },
@@ -54,7 +61,9 @@ function str(value: unknown): string | undefined {
 }
 
 function num(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
 }
 
 function bool(value: unknown): boolean | undefined {
@@ -81,7 +90,11 @@ export function parseHandle(value: unknown, fallbackService: Service): Handle {
   };
 }
 
-function parseKind(value: unknown, guid: string, participantCount: number): ChatKind {
+function parseKind(
+  value: unknown,
+  guid: string,
+  participantCount: number,
+): ChatKind {
   const style = num(value);
   if (style === 43) return "group";
   if (style === 45) return "dm";
@@ -95,9 +108,11 @@ function chatService(guid: string): Service {
 
 export function parseContact(value: unknown): Contact | undefined {
   if (!isRecord(value)) return undefined;
-  const displayName =
-    str(value.displayName) ??
-    [str(value.firstName), str(value.lastName)].filter(Boolean).join(" ").trim();
+  const explicitName = str(value.displayName)?.trim();
+  const displayName = explicitName || [str(value.firstName), str(value.lastName)]
+    .map((part) => part?.trim())
+    .filter(Boolean)
+    .join(" ");
   if (!displayName) return undefined;
   const phones: HandleAddress[] = [];
   const emails: HandleAddress[] = [];
@@ -127,7 +142,26 @@ export function parseContact(value: unknown): Contact | undefined {
   return { displayName, phones, emails };
 }
 
-function titleFromChat(record: Record<string, unknown>, kind: ChatKind, participants: Handle[]): string {
+function parseAttachments(value: unknown): TextMessage["attachments"] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    if (!isRecord(entry)) return [];
+    const attachmentGuid = str(entry.guid);
+    if (!attachmentGuid) return [];
+    return [{
+      guid: attachmentGuid,
+      name: str(entry.transferName) ?? str(entry.name) ?? str(entry.uti) ?? "file",
+      mime: str(entry.mimeType) ?? str(entry.mime) ?? "application/octet-stream",
+      bytes: num(entry.totalBytes) ?? num(entry.bytes) ?? 0,
+    }];
+  });
+}
+
+function titleFromChat(
+  record: Record<string, unknown>,
+  kind: ChatKind,
+  participants: Handle[],
+): string {
   const named = str(record.displayName);
   if (named && named.length > 0) return named;
   if (kind === "group") {
@@ -143,8 +177,10 @@ export function parseChat(value: unknown): Chat {
   const guidRaw = str(value.guid);
   if (!guidRaw) throw new Error("chat missing guid");
   const guid = parseChatGuid(guidRaw);
-  const service = chatService(guidRaw);
-  const participantsRaw = Array.isArray(value.participants) ? value.participants : [];
+  const service = parseService(value.service ?? chatService(guidRaw));
+  const participantsRaw = Array.isArray(value.participants)
+    ? value.participants
+    : [];
   const participants = participantsRaw.map((p) => parseHandle(p, service));
   const kind = parseKind(value.style, guidRaw, participants.length);
   const last = isRecord(value.lastMessage) ? value.lastMessage : undefined;
@@ -158,8 +194,10 @@ export function parseChat(value: unknown): Chat {
     muted: bool(value.isMuted) ?? false,
   };
   if (last) {
+    const body = str(last.text) ?? str(last.universalText) ?? "";
+    const attachments = parseAttachments(last.attachments);
     chat.lastMessage = {
-      body: str(last.text) ?? str(last.universalText) ?? "",
+      body: body || attachments.map((attachment) => `[${attachment.name}]`).join(" "),
       sentAt: num(last.dateCreated) ?? 0,
       isFromMe: bool(last.isFromMe) ?? false,
     };
@@ -174,7 +212,10 @@ function parseReactionNamed(value: unknown): Reaction | undefined {
   return NAMED_REACTION[key];
 }
 
-function groupAction(itemType: number | undefined, groupActionType: number | undefined): GroupEventMessage["action"] | undefined {
+function groupAction(
+  itemType: number | undefined,
+  groupActionType: number | undefined,
+): GroupEventMessage["action"] | undefined {
   if (itemType === 1 && groupActionType === 0) return "add";
   if (itemType === 1 && groupActionType === 1) return "remove";
   if (itemType === 3) return "leave";
@@ -197,14 +238,25 @@ export function parseMessage(value: unknown): Message | undefined {
   const guidRaw = str(value.guid);
   if (!guidRaw) return undefined;
   const text = str(value.text) ?? str(value.universalText) ?? "";
-  if (UUID_ONLY.test(text)) return undefined;
-
   const guid = parseMessageGuid(guidRaw);
   const chatGuid = chatGuidFromMessage(value);
   const sentAt = num(value.dateCreated) ?? 0;
   const isFromMe = bool(value.isFromMe) ?? false;
-  const service = parseService(isRecord(value.handle) ? value.handle.service : undefined);
-  const from = parseHandle(value.handle, service);
+  const firstChat =
+    Array.isArray(value.chats) && isRecord(value.chats[0])
+      ? value.chats[0]
+      : undefined;
+  const service = parseService(
+    (isRecord(value.handle) ? value.handle.service : undefined) ??
+      firstChat?.service ??
+      chatGuid.split(";", 1)[0],
+  );
+  const from = parseHandle(
+    value.handle ??
+      value.sender ??
+      (isFromMe ? { address: "me", service } : undefined),
+    service,
+  );
   const itemType = num(value.itemType);
   const action = groupAction(itemType, num(value.groupActionType));
   if (action) {
@@ -255,26 +307,12 @@ export function parseMessage(value: unknown): Message | undefined {
     return { kind: "unsent", guid, chatGuid, sentAt };
   }
 
-  const attachments = Array.isArray(value.attachments) ? value.attachments : [];
-  if (attachments.length > 0 && text.length === 0) {
-    const first = isRecord(attachments[0]) ? attachments[0] : {};
-    return {
-      kind: "attachment",
-      guid,
-      chatGuid,
-      sentAt,
-      from,
-      isFromMe,
-      name: str(first.transferName) ?? str(first.uti) ?? "file",
-      mime: str(first.mimeType) ?? "application/octet-stream",
-      bytes: num(first.totalBytes) ?? 0,
-      status: isFromMe ? "sent" : "delivered",
-    } satisfies AttachmentMessage;
-  }
+  const attachments = parseAttachments(value.attachments);
 
   const error = num(value.error) ?? 0;
   const deliveredAt = num(value.dateDelivered);
   const readAt = num(value.dateRead);
+  const editedAt = num(value.dateEdited);
   let status: TextMessage["status"] = "sent";
   if (error !== 0) status = "failed";
   else if (readAt) status = "read";
@@ -291,11 +329,12 @@ export function parseMessage(value: unknown): Message | undefined {
     from,
     isFromMe,
     body: text,
-    tapbacks: [],
+    attachments,
     status,
   };
   if (deliveredAt !== undefined) textMessage.deliveredAt = deliveredAt;
   if (readAt !== undefined) textMessage.readAt = readAt;
+  if (editedAt !== undefined) textMessage.editedAt = editedAt;
   if (reply) textMessage.replyTo = parseMessageGuid(reply);
   if (temp) textMessage.tempGuid = parseMessageGuid(temp);
   return textMessage;
@@ -307,40 +346,81 @@ export function parseEnvelopeData(value: unknown): unknown {
   return value;
 }
 
-export function parseChatList(value: unknown): Chat[] {
+function report(
+  kind: ParseDiagnostic["kind"],
+  index: number,
+  error: unknown,
+  sink?: DiagnosticSink,
+): void {
+  sink?.({
+    kind,
+    index,
+    error: error instanceof Error ? error.message : String(error),
+  });
+}
+
+export function parseChatList(value: unknown, sink?: DiagnosticSink): Chat[] {
   const data = parseEnvelopeData(value);
   if (!Array.isArray(data)) return [];
   const chats: Chat[] = [];
-  for (const item of data) {
+  for (const [index, item] of data.entries()) {
     try {
       chats.push(parseChat(item));
-    } catch {
-      continue;
+    } catch (error) {
+      report("chat", index, error, sink);
     }
   }
   return chats;
 }
 
-export function parseMessageList(value: unknown): Message[] {
+export function parseMessageList(
+  value: unknown,
+  sink?: DiagnosticSink,
+): Message[] {
   const data = parseEnvelopeData(value);
   if (!Array.isArray(data)) return [];
-  return data.flatMap((item) => {
-    const parsed = parseMessage(item);
-    return parsed ? [parsed] : [];
-  });
+  const messages: Message[] = [];
+  for (const [index, item] of data.entries()) {
+    try {
+      const parsed = parseMessage(item);
+      if (parsed) messages.push(parsed);
+      else report("message", index, "unsupported message payload", sink);
+    } catch (error) {
+      report("message", index, error, sink);
+    }
+  }
+  return messages;
 }
 
-export function parseContactList(value: unknown): Contact[] {
+export function parseContactList(
+  value: unknown,
+  sink?: DiagnosticSink,
+): Contact[] {
   const data = parseEnvelopeData(value);
   if (!Array.isArray(data)) return [];
-  return data.flatMap((item) => {
-    const parsed = parseContact(item);
-    return parsed ? [parsed] : [];
-  });
+  const contacts: Contact[] = [];
+  for (const [index, item] of data.entries()) {
+    try {
+      const parsed = parseContact(item);
+      if (parsed) contacts.push(parsed);
+      else report("contact", index, "unsupported contact payload", sink);
+    } catch (error) {
+      report("contact", index, error, sink);
+    }
+  }
+  return contacts;
 }
 
-export function parseServerInfo(value: unknown): { privateApi: boolean; helperConnected: boolean } {
-  const data = isRecord(value) && isRecord(value.data) ? value.data : isRecord(value) ? value : {};
+export function parseServerInfo(value: unknown): {
+  privateApi: boolean;
+  helperConnected: boolean;
+} {
+  const data =
+    isRecord(value) && isRecord(value.data)
+      ? value.data
+      : isRecord(value)
+        ? value
+        : {};
   return {
     privateApi: bool(data.private_api) ?? false,
     helperConnected: bool(data.helper_connected) ?? false,

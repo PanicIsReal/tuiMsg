@@ -4,3 +4,5 @@ dist
 *.log
 coverage
 .turbo
+.audit/
+.pnpm-store/
