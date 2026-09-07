@@ -408,41 +408,83 @@ export class FakeBb {
   }
 }
 
+const JANE = "iMessage;+;+15551230001";
+const SAM = "SMS;+;+15551230002";
+const RILEY = "iMessage;+;+15551230004";
+const MIRA = "iMessage;+;+15551230005";
+const WEEKEND = "iMessage;+;chat000111222";
+const JORDAN = "iMessage;+;+15551230006";
+const BOOK = "iMessage;+;chat000444555";
+
+function textMessage(args: {
+  guid: string;
+  chatGuid: string;
+  text: string;
+  isFromMe: boolean;
+  dateCreated: number;
+  address: string;
+  service: string;
+  dateDelivered?: number;
+}): FakeMessage {
+  return {
+    guid: args.guid,
+    chatGuid: args.chatGuid,
+    text: args.text,
+    isFromMe: args.isFromMe,
+    dateCreated: args.dateCreated,
+    ...(args.dateDelivered === undefined
+      ? {}
+      : { dateDelivered: args.dateDelivered }),
+    handle: { address: args.address, service: args.service },
+    chats: [{ guid: args.chatGuid }],
+  };
+}
+
 function defaultChats(): FakeChat[] {
   const now = Date.now();
+  const messages = defaultMessagesAt(now);
+  const last = (guid: string) => {
+    const rows = messages[guid] ?? [];
+    return rows
+      .filter((m) => !m.associatedMessageType)
+      .sort((a, b) => a.dateCreated - b.dateCreated)
+      .at(-1);
+  };
   return [
     {
-      guid: "iMessage;+;+15551230001",
+      guid: JANE,
       style: 45,
       displayName: "",
       unreadCount: 2,
       participants: [{ address: "+15551230001", service: "iMessage" }],
-      lastMessage: {
-        guid: "m1",
-        chatGuid: "iMessage;+;+15551230001",
-        text: "You coming tonight?",
-        isFromMe: false,
-        dateCreated: now - 120_000,
-        handle: { address: "+15551230001", service: "iMessage" },
-      },
+      lastMessage: last(JANE),
     },
     {
-      guid: "SMS;+;+15551230002",
+      guid: SAM,
       style: 45,
       displayName: "",
       unreadCount: 0,
       participants: [{ address: "+15551230002", service: "SMS" }],
-      lastMessage: {
-        guid: "m2",
-        chatGuid: "SMS;+;+15551230002",
-        text: "Parking is around back",
-        isFromMe: true,
-        dateCreated: now - 3_600_000,
-        handle: { address: "me", service: "SMS" },
-      },
+      lastMessage: last(SAM),
     },
     {
-      guid: "iMessage;+;chat000111222",
+      guid: RILEY,
+      style: 45,
+      displayName: "",
+      unreadCount: 1,
+      participants: [{ address: "+15551230004", service: "iMessage" }],
+      lastMessage: last(RILEY),
+    },
+    {
+      guid: MIRA,
+      style: 45,
+      displayName: "",
+      unreadCount: 0,
+      participants: [{ address: "+15551230005", service: "iMessage" }],
+      lastMessage: last(MIRA),
+    },
+    {
+      guid: WEEKEND,
       style: 43,
       displayName: "Weekend",
       unreadCount: 0,
@@ -450,63 +492,287 @@ function defaultChats(): FakeChat[] {
         { address: "+15551230001", service: "iMessage" },
         { address: "+15551230003", service: "iMessage" },
       ],
-      lastMessage: {
-        guid: "m3",
-        chatGuid: "iMessage;+;chat000111222",
-        text: "Bring chips",
-        isFromMe: false,
-        dateCreated: now - 86_400_000,
-        handle: { address: "+15551230003", service: "iMessage" },
-      },
+      lastMessage: last(WEEKEND),
+    },
+    {
+      guid: JORDAN,
+      style: 45,
+      displayName: "",
+      unreadCount: 0,
+      participants: [{ address: "+15551230006", service: "iMessage" }],
+      lastMessage: last(JORDAN),
+    },
+    {
+      guid: BOOK,
+      style: 43,
+      displayName: "Book club",
+      unreadCount: 0,
+      participants: [
+        { address: "+15551230007", service: "iMessage" },
+        { address: "+15551230008", service: "iMessage" },
+      ],
+      lastMessage: last(BOOK),
     },
   ];
 }
 
 function defaultMessages(): Record<string, FakeMessage[]> {
-  const now = Date.now();
+  return defaultMessagesAt(Date.now());
+}
+
+function defaultMessagesAt(now: number): Record<string, FakeMessage[]> {
   return {
-    "iMessage;+;+15551230001": [
-      {
-        guid: "m0",
-        chatGuid: "iMessage;+;+15551230001",
-        text: "Hey",
+    [JANE]: [
+      textMessage({
+        guid: "jane-1",
+        chatGuid: JANE,
+        text: "Running late, sorry!",
         isFromMe: false,
-        dateCreated: now - 300_000,
-        handle: { address: "+15551230001", service: "iMessage" },
-        chats: [{ guid: "iMessage;+;+15551230001" }],
-      },
-      {
-        guid: "m1",
-        chatGuid: "iMessage;+;+15551230001",
-        text: "You coming tonight?",
+        dateCreated: now - 25 * 60_000,
+        address: "+15551230001",
+        service: "iMessage",
+      }),
+      textMessage({
+        guid: "jane-2",
+        chatGuid: JANE,
+        text: "All good. Grab the booth by the window?",
+        isFromMe: true,
+        dateCreated: now - 23 * 60_000,
+        address: "me",
+        service: "iMessage",
+      }),
+      textMessage({
+        guid: "jane-3",
+        chatGuid: JANE,
+        text: "Already claimed it. They're out of the spicy dumplings though so I got the regular ones and an extra bao just in case.",
         isFromMe: false,
-        dateCreated: now - 120_000,
-        handle: { address: "+15551230001", service: "iMessage" },
-        chats: [{ guid: "iMessage;+;+15551230001" }],
+        dateCreated: now - 20 * 60_000,
+        address: "+15551230001",
+        service: "iMessage",
+      }),
+      {
+        guid: "jane-tap-laugh",
+        chatGuid: JANE,
+        text: "",
+        isFromMe: true,
+        dateCreated: now - 19 * 60_000,
+        handle: { address: "me", service: "iMessage" },
+        associatedMessageType: 2003,
+        associatedMessageGuid: "p:0/jane-3",
+        chats: [{ guid: JANE }],
       },
+      textMessage({
+        guid: "jane-4",
+        chatGuid: JANE,
+        text: "Perfect. Leaving now.",
+        isFromMe: true,
+        dateCreated: now - 12 * 60_000,
+        address: "me",
+        service: "iMessage",
+      }),
+      textMessage({
+        guid: "jane-5",
+        chatGuid: JANE,
+        text: "See you soon",
+        isFromMe: false,
+        dateCreated: now - 8 * 60_000,
+        address: "+15551230001",
+        service: "iMessage",
+      }),
+      textMessage({
+        guid: "jane-6",
+        chatGuid: JANE,
+        text: "On the bike",
+        isFromMe: true,
+        dateCreated: now - 4 * 60_000,
+        address: "me",
+        service: "iMessage",
+      }),
+      textMessage({
+        guid: "jane-7",
+        chatGuid: JANE,
+        text: "Side door is quieter",
+        isFromMe: false,
+        dateCreated: now - 2 * 60_000,
+        address: "+15551230001",
+        service: "iMessage",
+      }),
+      textMessage({
+        guid: "jane-8",
+        chatGuid: JANE,
+        text: "I'll wave when I see you",
+        isFromMe: false,
+        dateCreated: now - 90_000,
+        address: "+15551230001",
+        service: "iMessage",
+      }),
     ],
-    "SMS;+;+15551230002": [
-      {
-        guid: "m2",
-        chatGuid: "SMS;+;+15551230002",
+    [SAM]: [
+      textMessage({
+        guid: "sam-1",
+        chatGuid: SAM,
+        text: "Just pulled up",
+        isFromMe: false,
+        dateCreated: now - 20 * 60_000,
+        address: "+15551230002",
+        service: "SMS",
+      }),
+      textMessage({
+        guid: "sam-2",
+        chatGuid: SAM,
         text: "Parking is around back",
         isFromMe: true,
-        dateCreated: now - 3_600_000,
-        dateDelivered: now - 3_590_000,
-        handle: { address: "me", service: "SMS" },
-        chats: [{ guid: "SMS;+;+15551230002" }],
-      },
+        dateCreated: now - 12 * 60_000,
+        dateDelivered: now - 11 * 60_000,
+        address: "me",
+        service: "SMS",
+      }),
+      textMessage({
+        guid: "sam-3",
+        chatGuid: SAM,
+        text: "Loading dock spots are open",
+        isFromMe: true,
+        dateCreated: now - 8 * 60_000,
+        dateDelivered: now - 7 * 60_000,
+        address: "me",
+        service: "SMS",
+      }),
     ],
-    "iMessage;+;chat000111222": [
-      {
-        guid: "m3",
-        chatGuid: "iMessage;+;chat000111222",
+    [RILEY]: [
+      textMessage({
+        guid: "riley-1",
+        chatGuid: RILEY,
+        text: "Deck's in the shared folder",
+        isFromMe: true,
+        dateCreated: now - 55 * 60_000,
+        address: "me",
+        service: "iMessage",
+      }),
+      textMessage({
+        guid: "riley-2",
+        chatGuid: RILEY,
+        text: "Nice, chart three still has old numbers",
+        isFromMe: false,
+        dateCreated: now - 48 * 60_000,
+        address: "+15551230004",
+        service: "iMessage",
+      }),
+      textMessage({
+        guid: "riley-3",
+        chatGuid: RILEY,
+        text: "Can you push a fix before standup?",
+        isFromMe: false,
+        dateCreated: now - 40 * 60_000,
+        address: "+15551230004",
+        service: "iMessage",
+      }),
+    ],
+    [MIRA]: [
+      textMessage({
+        guid: "mira-1",
+        chatGuid: MIRA,
+        text: "Standup moved to 2",
+        isFromMe: false,
+        dateCreated: now - 3 * 60 * 60_000 - 20 * 60_000,
+        address: "+15551230005",
+        service: "iMessage",
+      }),
+      textMessage({
+        guid: "mira-2",
+        chatGuid: MIRA,
+        text: "Thanks, blocked the time",
+        isFromMe: true,
+        dateCreated: now - 3 * 60 * 60_000,
+        address: "me",
+        service: "iMessage",
+      }),
+    ],
+    [WEEKEND]: [
+      textMessage({
+        guid: "weekend-1",
+        chatGuid: WEEKEND,
+        text: "Still on for Saturday?",
+        isFromMe: true,
+        dateCreated: now - 86_400_000 - 3 * 60 * 60_000,
+        address: "me",
+        service: "iMessage",
+      }),
+      textMessage({
+        guid: "weekend-2",
+        chatGuid: WEEKEND,
+        text: "Yep, 6 at my place",
+        isFromMe: false,
+        dateCreated: now - 86_400_000 - 2 * 60 * 60_000,
+        address: "+15551230001",
+        service: "iMessage",
+      }),
+      textMessage({
+        guid: "weekend-3",
+        chatGuid: WEEKEND,
+        text: "I'll bring drinks",
+        isFromMe: true,
+        dateCreated: now - 86_400_000 - 60 * 60_000,
+        address: "me",
+        service: "iMessage",
+      }),
+      textMessage({
+        guid: "weekend-4",
+        chatGuid: WEEKEND,
         text: "Bring chips",
         isFromMe: false,
         dateCreated: now - 86_400_000,
-        handle: { address: "+15551230003", service: "iMessage" },
-        chats: [{ guid: "iMessage;+;chat000111222" }],
-      },
+        address: "+15551230003",
+        service: "iMessage",
+      }),
+    ],
+    [JORDAN]: [
+      textMessage({
+        guid: "jordan-1",
+        chatGuid: JORDAN,
+        text: "Final cut is up",
+        isFromMe: false,
+        dateCreated: now - 2 * 86_400_000 - 60 * 60_000,
+        address: "+15551230006",
+        service: "iMessage",
+      }),
+      textMessage({
+        guid: "jordan-2",
+        chatGuid: JORDAN,
+        text: "Watching tonight",
+        isFromMe: true,
+        dateCreated: now - 2 * 86_400_000,
+        address: "me",
+        service: "iMessage",
+      }),
+    ],
+    [BOOK]: [
+      textMessage({
+        guid: "book-1",
+        chatGuid: BOOK,
+        text: "Next up is the short one",
+        isFromMe: false,
+        dateCreated: now - 4 * 86_400_000 - 2 * 60 * 60_000,
+        address: "+15551230007",
+        service: "iMessage",
+      }),
+      textMessage({
+        guid: "book-2",
+        chatGuid: BOOK,
+        text: "Finish by Thursday?",
+        isFromMe: true,
+        dateCreated: now - 4 * 86_400_000 - 60 * 60_000,
+        address: "me",
+        service: "iMessage",
+      }),
+      textMessage({
+        guid: "book-3",
+        chatGuid: BOOK,
+        text: "Works for me",
+        isFromMe: false,
+        dateCreated: now - 4 * 86_400_000,
+        address: "+15551230008",
+        service: "iMessage",
+      }),
     ],
   };
 }
@@ -516,5 +782,10 @@ function defaultContacts(): FakeContact[] {
     { displayName: "Jane Doe", phoneNumbers: [{ address: "+15551230001" }] },
     { displayName: "Sam Park", phoneNumbers: [{ address: "+15551230002" }] },
     { displayName: "Alex Kim", phoneNumbers: [{ address: "+15551230003" }] },
+    { displayName: "Riley Chen", phoneNumbers: [{ address: "+15551230004" }] },
+    { displayName: "Mira Shah", phoneNumbers: [{ address: "+15551230005" }] },
+    { displayName: "Jordan Blake", phoneNumbers: [{ address: "+15551230006" }] },
+    { displayName: "Casey Ng", phoneNumbers: [{ address: "+15551230007" }] },
+    { displayName: "Drew Ortiz", phoneNumbers: [{ address: "+15551230008" }] },
   ];
 }
