@@ -139,16 +139,27 @@ it("loads pixels only after an inline preview enters its clipped viewport", asyn
     await new Promise(resolve => setTimeout(resolve, 80));
     expect(loads).toBe(0);
     app.rerender(tree(0));
-    await new Promise(resolve => setTimeout(resolve, 120));
+    await waitUntil(() => loads === 1 && (app.lastFrame() ?? "").includes("▄"));
     expect(loads).toBe(1);
     expect(app.lastFrame()).toContain("▄");
     app.rerender(createElement(Box, { flexDirection: "column" },
       createElement(Box, { height: 1, width: 10, overflow: "hidden", flexDirection: "column" }, preview),
       createElement(Text, {}, "FOOTER")));
-    await new Promise(resolve => setTimeout(resolve, 80));
+    await waitUntil(() => {
+      const lines = app.lastFrame()?.split("\n") ?? [];
+      return (lines[0] ?? "").includes("▄") && lines[1] === "FOOTER";
+    });
     const lines = app.lastFrame()?.split("\n") ?? [];
     expect(lines[0]).toContain("▄");
     expect(lines[1]).toBe("FOOTER");
     expect(lines.slice(1).join("\n")).not.toContain("▄");
   } finally { app.unmount(); }
 });
+
+async function waitUntil(check: () => boolean, timeoutMs = 5_000): Promise<void> {
+  const started = Date.now();
+  while (!check()) {
+    if (Date.now() - started >= timeoutMs) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
