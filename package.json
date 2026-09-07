@@ -4,7 +4,8 @@
   "description": "Messages.app TUI over BlueBubbles",
   "type": "module",
   "bin": {
-    "imsg": "./bin/imsg"
+    "imsg": "./bin/imsg",
+    "tuimsg": "./bin/imsg"
   },
   "files": [
     "bin",
@@ -28,6 +29,15 @@
     "bun": ">=1.3.14"
   },
   "license": "MIT",
+  "author": "Panic",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PanicIsReal/tuiMsg.git"
+  },
+  "homepage": "https://github.com/PanicIsReal/tuiMsg",
+  "bugs": {
+    "url": "https://github.com/PanicIsReal/tuiMsg/issues"
+  },
   "keywords": [
     "imessage",
     "bluebubbles",
