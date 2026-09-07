@@ -4,6 +4,8 @@ A terminal Messages window built with Ink and React for a Mac running BlueBubble
 
 Browse conversations, search names and previews, read older messages, and compose with a draft for each conversation. You can reply, react, copy message text, and preview images, and download received attachments. Narrow terminals show one pane at a time.
 
+The conversation list starts at the newest chat as the initial pages load. Once you navigate, later updates preserve your selection. While reading older messages, click **d latest** or press `d` or `End` in the transcript to return to the bottom and select the latest message. Sending a message also scrolls to the bottom.
+
 ## Setup
 
 Install [Bun](https://bun.sh) 1.3.14 or newer, then start [BlueBubbles](https://bluebubbles.app) on the Mac. Bun must be on your `PATH`, including when launching through npm or over SSH.
@@ -71,7 +73,7 @@ Kitty-compatible terminals, including detected Kitty, WezTerm, and Ghostty sessi
 
 Preview decoding limits compressed files to 32 MB and source images to 40 million pixels. GIFs exceeding 60 frames or a total 40-million-pixel animation budget show a still frame. Offscreen previews defer downloads and release decoded frames.
 
-Contact names come from the BlueBubbles address book. Matching ignores phone punctuation and email capitalization. North American numbers also match their ten-digit, `1`, and `+1` forms, including a stray `+` before the ten-digit number, when exactly one contact matches. For example, `7805550123`, `+7805550123`, `17805550123`, and `+17805550123` resolve to the same saved contact name. Exact matches take precedence. Missing server contacts and conflicting fallback matches remain displayed as addresses.
+Contact names come from the BlueBubbles address book. Matching ignores phone punctuation and email capitalization. North American numbers also match their ten-digit, `1`, and `+1` forms, including a stray `+` before the ten-digit number. For example, `7805550123`, `+7805550123`, `17805550123`, and `+17805550123` resolve to the same saved contact name. Duplicate cards with equivalent numbers can supply the name when their display names agree. Exact matches take precedence. Missing server contacts and fallback matches with conflicting names remain displayed as addresses.
 
 Attachment downloads are saved on the computer running `imsg`. Over SSH, opening an attachment saves it there and displays its path. On a local Mac, opening also launches the associated application.
 

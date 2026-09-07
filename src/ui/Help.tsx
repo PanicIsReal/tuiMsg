@@ -9,7 +9,7 @@ const LINES = [
   "a files · v image · o open · s save",
   "! retry · g older · m retry read",
   "/ search · n new · PgUp/PgDn scroll",
-  "? help · q quit",
+  "d / End latest · ? help · q quit",
 ] as const;
 
 export function Help(props: { width: number; height: number }) {

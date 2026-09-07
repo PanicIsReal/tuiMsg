@@ -8,6 +8,7 @@ const alice = parseHandleAddress("alice@example.com");
 const bob = parseHandleAddress("bob@example.com");
 const chatGuid = parseChatGuid("iMessage;+;alice@example.com");
 const secondGuid = parseChatGuid("iMessage;+;bob@example.com");
+const thirdGuid = parseChatGuid("iMessage;+;carol@example.com");
 
 function chat(guid = chatGuid, title = "Alice"): Chat {
   return { guid, kind: "dm", service: "iMessage", title, participants: [{ address: guid === chatGuid ? alice : bob, service: "iMessage" }], unreadCount: 0, muted: false };
@@ -25,6 +26,18 @@ describe("domain event transitions", () => {
     state = reduce(state, { type: "open-chat", chatGuid });
     expect(state.selected).toBe(chatGuid);
     expect(state.listCursor).toBe(secondGuid);
+  });
+
+  it("pins the initial list cursor to the newest chat until the user moves it", () => {
+    const older = { ...chat(), lastMessage: { body: "old", sentAt: 10, isFromMe: false } };
+    const newer = { ...chat(secondGuid, "Bob"), lastMessage: { body: "new", sentAt: 20, isFromMe: false } };
+    let state = reduce(emptyState(), { type: "chats-loaded", chats: [older] });
+    state = reduce(state, { type: "chats-loaded", chats: [newer] });
+    expect(state.listCursor).toBe(secondGuid);
+    state = reduce(state, { type: "move-list", delta: 1 });
+    expect(state.listCursor).toBe(chatGuid);
+    state = reduce(state, { type: "chats-loaded", chats: [{ ...chat(thirdGuid, "Carol"), lastMessage: { body: "latest", sentAt: 30, isFromMe: false } }] });
+    expect(state.listCursor).toBe(chatGuid);
   });
 
   it("owns draft text and replies per chat", () => {

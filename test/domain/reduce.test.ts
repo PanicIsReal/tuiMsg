@@ -46,12 +46,27 @@ describe("reduce", () => {
       tempGuid: temp,
     });
     const pending = state.messages.get(chatGuid)?.[0];
+    expect(state.messageCursor.get(chatGuid)).toBe(temp);
     expect(pending?.kind).toBe("text");
     if (pending?.kind === "text") expect(pending.status).toBe("pending");
     state = reduce(state, { type: "send-acked", tempGuid: temp, guid: final });
     const acked = state.messages.get(chatGuid)?.[0];
     expect(acked?.guid).toBe(final);
+    expect(state.messageCursor.get(chatGuid)).toBe(final);
     if (acked?.kind === "text") expect(acked.status).toBe("sent");
+  });
+
+  it("selects a new send but preserves navigation made before its acknowledgement", () => {
+    const old = parseMessageGuid("older-selected");
+    const temp = parseMessageGuid("pending-selected");
+    const final = parseMessageGuid("ack-selected");
+    let state = reduce(emptyState(), { type: "messages-loaded", chatGuid, messages: [text({ guid: old, body: "Earlier" })] });
+    state = reduce(state, { type: "select-message", chatGuid, messageGuid: old });
+    state = reduce(state, { type: "send-requested", chatGuid, text: "New message", tempGuid: temp });
+    expect(state.messageCursor.get(chatGuid)).toBe(temp);
+    state = reduce(state, { type: "select-message", chatGuid, messageGuid: old });
+    state = reduce(state, { type: "send-acked", tempGuid: temp, guid: final });
+    expect(state.messageCursor.get(chatGuid)).toBe(old);
   });
 
   it("increments unread for other chats only", () => {

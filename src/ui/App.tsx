@@ -72,6 +72,7 @@ function AppContent({ session }: AppProps) {
                   <Transcript chatGuid={selected.guid} title={selected.title} messages={messages}
                     height={size.height - 1 - composerHeight(draftFor(state, selected.guid), input.kind === "composer")} width={laneWidth}
                     typing={Boolean(state.typing.get(selected.guid))} focused={input.kind === "transcript"}
+                    interactive={input.kind === "list" || input.kind === "transcript" || input.kind === "composer"}
                     cursor={cursor} history={history} readError={state.readPending.get(selected.guid) ?? null}
                     onSelect={(messageGuid) => { if (input.kind === "list" || input.kind === "transcript" || input.kind === "composer") session.act({ type: "select-message", chatGuid: selected.guid, messageGuid }); }}
                     onHistory={(mode) => session.act({ type: "load-history", chatGuid: selected.guid, mode })}

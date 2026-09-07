@@ -1,3 +1,4 @@
+import { reduce } from "../src/domain/reduce.ts";
 import { strict as assert } from "node:assert";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { render } from "ink-testing-library";
@@ -37,6 +38,7 @@ let state: AppState = {
 
 const listeners = new Set<() => void>();
 const intents: Intent[] = [];
+let sendThroughReducer = false;
 let peakListeners = 0;
 let subscribeCalls = 0;
 
@@ -62,7 +64,11 @@ const session: Session = {
 };
 
 function apply(intent: Intent): void {
-  if (intent.type === "input") state = { ...state, input: intent.input };
+  if (intent.type === "send" && sendThroughReducer) {
+    const text = state.drafts.get(intent.chatGuid)?.text ?? "";
+    state = reduce(state, { type: "send-requested", chatGuid: intent.chatGuid, text, tempGuid: parseMessageGuid("local-send-scroll") });
+  }
+  else if (intent.type === "input") state = { ...state, input: intent.input };
   else if (intent.type === "move-list") {
     const order = [...state.chats.keys()];
     const index = Math.max(0, order.indexOf(state.listCursor ?? order[0]!));
@@ -135,11 +141,12 @@ saveFrame("normal-conversation-120x30.txt", setup.captureCharFrame());
 setup.resize(260, 40);
 await setup.flush();
 const wideFrame = setup.captureCharFrame();
+assert.match(wideFrame, /v image · d latest/, "latest must directly follow image in the shortcut row");
 saveFrame("wide-conversation-260x40.txt", wideFrame);
 assert.doesNotMatch(wideFrame, /[╭╮╰╯]/, "the conversation should not box each message");
 const incomingColumn = wideFrame.split("\n").find(line => line.includes("Can you bring the project notes tomorrow?"))?.indexOf("Can you bring");
 const outgoingColumn = wideFrame.split("\n").find(line => line.includes("Yes, I have them ready."))?.indexOf("Yes, I have");
-assert.equal(incomingColumn, outgoingColumn, "incoming and outgoing messages must share one reading lane on wide terminals");
+assert(incomingColumn !== undefined && outgoingColumn !== undefined && outgoingColumn > incomingColumn, "sent messages must align to the right of received messages within the bounded lane");
 assert(wideFrame.split("\n").filter(line => line.includes("─")).every(line => (line.match(/─/g)?.length ?? 0) <= 100), "the reading lane must stay bounded on wide terminals");
 
 setup.resize(100, 35);
@@ -391,6 +398,99 @@ await delay(50);
 await setup.flush();
 
 assert.match(setup.captureCharFrame(), new RegExp(visibleAnchor));
+assert.match(setup.captureCharFrame(), /d latest/);
+const beforeBottomClick = setup.captureCharFrame().split("\n");
+const bottomButtonRow = beforeBottomClick.findIndex(line => line.includes("d latest"));
+const bottomButtonColumn = beforeBottomClick[bottomButtonRow]!.indexOf("d latest");
+app.stdin.write(`\x1b[<0;${bottomButtonColumn + 2};${bottomButtonRow + 1}M`);
+await setup.flush();
+assert.equal(state.messageCursor.get(firstChat), live.guid, "clicking Latest must select the latest message");
+assert.match(setup.captureCharFrame(), /A background arrival/);
+assert.match(setup.captureCharFrame(), / · d latest/, "latest must remain inline with the shortcut list at the bottom");
+session.act({ type: "select-message", chatGuid: firstChat, messageGuid: parseMessageGuid("long-7") });
+await setup.flush();
+assert.match(setup.captureCharFrame(), /d latest/);
+app.stdin.write("\x1b[F");
+await setup.flush();
+assert.equal(state.messageCursor.get(firstChat), live.guid, "End must select the latest message");
+assert.match(setup.captureCharFrame(), /A background arrival/);
+
+session.act({ type: "select-message", chatGuid: firstChat, messageGuid: parseMessageGuid("long-7") });
+await setup.flush();
+assert.match(setup.captureCharFrame(), /d latest/);
+app.stdin.write("d");
+await setup.flush();
+assert.equal(state.messageCursor.get(firstChat), live.guid, "d must select the latest message");
+assert.match(setup.captureCharFrame(), /A background arrival/, "d must scroll to the bottom");
+
+for (const input of [{ kind: "composer", chatGuid: firstChat }, { kind: "list" }] as const) {
+  setup.resize(100, 30);
+  session.act({ type: "select-message", chatGuid: firstChat, messageGuid: parseMessageGuid("long-7") });
+  session.act({ type: "input", input });
+  await setup.flush();
+  const lines = setup.captureCharFrame().split("\n");
+  const row = lines.findIndex(line => line.includes("d latest"));
+  assert(row >= 0, `Latest stays available while ${input.kind} is focused`);
+  const column = lines[row]!.indexOf("d latest");
+  app.stdin.write(`\x1b[<0;${column + 2};${row + 1}M`);
+  await setup.flush();
+  assert.equal(state.messageCursor.get(firstChat), live.guid);
+  assert.equal(state.input.kind, input.kind, "Latest click must preserve the active input pane");
+  assert.match(setup.captureCharFrame(), /A background arrival/);
+}
+session.act({ type: "input", input: { kind: "transcript", chatGuid: firstChat } });
+setup.resize(50, 16);
+await setup.flush();
+
+
+session.act({ type: "select-message", chatGuid: firstChat, messageGuid: parseMessageGuid("long-7") });
+session.act({ type: "input", input: { kind: "composer", chatGuid: firstChat } });
+await setup.flush();
+assert.match(setup.captureCharFrame(), /Long message 07/);
+const longOutgoing = [...Array.from({ length: 24 }, (_, index) => `Sent paragraph ${index}`), "SENT_TAIL_VISIBLE"].join("\n");
+session.act({ type: "draft-set", chatGuid: firstChat, text: longOutgoing });
+await setup.flush();
+sendThroughReducer = true;
+setup.mockInput.pressEnter();
+await setup.flush();
+sendThroughReducer = false;
+assert.equal(state.messageCursor.get(firstChat), parseMessageGuid("local-send-scroll"));
+assert.equal(state.input.kind, "composer");
+assert.match(setup.captureCharFrame(), /SENT_TAIL_VISIBLE/, "sending a tall message must scroll to its last line");
+session.act({ type: "input", input: { kind: "transcript", chatGuid: firstChat } });
+await setup.flush();
+app.stdin.write("\x1b[5~");
+await setup.flush();
+const beforeSendAck = setup.captureCharFrame();
+assert.doesNotMatch(beforeSendAck, /SENT_TAIL_VISIBLE/, "manual scrolling must remain possible after sending");
+state = reduce(state, { type: "send-acked", tempGuid: parseMessageGuid("local-send-scroll"), guid: parseMessageGuid("server-send-scroll") });
+for (const listener of listeners) listener();
+await setup.flush();
+assert.equal(state.messageCursor.get(firstChat), parseMessageGuid("server-send-scroll"));
+assert.equal(setup.captureCharFrame(), beforeSendAck, "delayed acknowledgment must preserve manual scrolling");
+app.stdin.write("\x1b[F");
+await setup.flush();
+assert.match(setup.captureCharFrame(), /SENT_TAIL_VISIBLE/, "End must still reach the acknowledged message tail");
+session.act({ type: "select-message", chatGuid: firstChat, messageGuid: parseMessageGuid("long-7") });
+session.act({ type: "input", input: { kind: "composer", chatGuid: firstChat } });
+await setup.flush();
+state = reduce(state, { type: "send-requested", chatGuid: firstChat, text: longOutgoing.replace("SENT_TAIL_VISIBLE", "BATCH_TAIL_VISIBLE"), tempGuid: parseMessageGuid("batched-scroll") });
+state = reduce(state, { type: "send-acked", tempGuid: parseMessageGuid("batched-scroll"), guid: parseMessageGuid("server-batched-scroll") });
+for (const listener of listeners) listener();
+await setup.flush();
+assert.equal(state.outbox.has(parseMessageGuid("batched-scroll")), false);
+assert.equal(state.input.kind, "composer");
+assert.match(setup.captureCharFrame(), /BATCH_TAIL_VISIBLE/, "a send and immediate acknowledgment in one render must reach the sent tail");
+session.act({ type: "select-message", chatGuid: firstChat, messageGuid: parseMessageGuid("long-7") });
+await setup.flush();
+const beforeRemoteOwn = setup.captureCharFrame();
+const remoteOwn: Message = { ...live, guid: parseMessageGuid("remote-own"), kind: "text", from: me, isFromMe: true, body: "Remote own message", attachments: [], status: "sent", tempGuid: parseMessageGuid("remote-temp") };
+state = { ...state, messages: new Map(state.messages).set(firstChat, [...state.messages.get(firstChat)!, remoteOwn]) };
+for (const listener of listeners) listener();
+await setup.flush();
+assert.equal(setup.captureCharFrame().split("\n").slice(3).join("\n"), beforeRemoteOwn.split("\n").slice(3).join("\n"), "a remote own message must preserve the reading position");
+
+
 
 state = {
   ...state,

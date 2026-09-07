@@ -1,3 +1,4 @@
+import stringWidth from "string-width";
 import { useMouse } from "./mouse.tsx";
 import { Box, Text, type DOMElement } from "ink";
 import { ImagePreview } from "./ImagePreview.tsx";
@@ -37,20 +38,33 @@ export const Bubble = memo(function Bubble(props: BubbleProps) {
   const mine = message.isFromMe;
   const body = normalizeBody(message.body);
   const imageAttachments = message.attachments.filter(isImageAttachment);
-  const contentWidth = Math.max(1, props.width - 4);
-  return <Box ref={element} width="100%" marginTop={props.grouped ? 0 : 1} flexDirection="row" flexShrink={0}>
-    <Box width={2} flexShrink={0}><Text color={props.selected ? colors.focus : colors.subtle}>{props.selected ? "›" : " "}</Text></Box>
+  const sender = mine ? "You" : message.from.contact?.displayName ?? message.from.address;
+  const timestamp = `${formatMessageTime(message.sentAt)}${message.from.service === "SMS" ? " · SMS" : ""}`;
+  const attachmentLabels = message.attachments.map(attachment => `${isImageAttachment(attachment) ? "↗" : "↓"} ${attachment.name}  ${formatBytes(attachment.bytes)}`);
+  const reactions = props.chips.map(chip => `${reactionGlyph[chip.reaction]}${chip.count > 1 ? ` ×${chip.count}` : ""}`).join("  ");
+  const naturalWidth = Math.max(
+    stringWidth(`${sender}  ${timestamp}`),
+    ...body.split("\n").map(line => stringWidth(line)),
+    ...attachmentLabels.map(label => stringWidth(label)),
+    stringWidth(reactions),
+    props.showReceipt || ["pending", "failed", "uncertain"].includes(message.status) ? stringWidth(receiptLabel(message)) : 0,
+    imageAttachments.length ? 48 : 1,
+  );
+  const contentWidth = Math.max(1, Math.min(naturalWidth, Math.floor((props.width - 4) * 0.7)));
+  return <Box ref={element} width="100%" marginTop={props.grouped ? 0 : 1} flexDirection="row" flexShrink={0} paddingRight={2} justifyContent={mine ? "flex-end" : "flex-start"}>
+    {!mine ? <Box width={2} flexShrink={0}><Text color={props.selected ? colors.focus : colors.subtle}>{props.selected ? "›" : " "}</Text></Box> : null}
     <Box width={contentWidth} flexDirection="column" flexShrink={0}>
       {!props.grouped ? <Box height={1} flexShrink={0}>
-        <Text wrap="truncate-end"><Text bold={!mine} color={mine ? colors.secondary : colors.text}>{mine ? "You" : message.from.contact?.displayName ?? message.from.address}</Text><Text color={colors.subtle}>  {formatMessageTime(message.sentAt)}{message.from.service === "SMS" ? " · SMS" : ""}</Text></Text>
+        <Text wrap="truncate-end"><Text bold={!mine} color={mine ? colors.secondary : colors.text}>{sender}</Text><Text color={colors.subtle}>  {timestamp}</Text></Text>
       </Box> : null}
       {body ? <Text color={colors.text}>{body}</Text> : null}
       {props.loadAttachment ? imageAttachments.map(attachment => <ImagePreview key={attachment.guid} attachment={attachment} loadAttachment={props.loadAttachment!} width={Math.min(48, contentWidth)} height={props.width < 60 ? 6 : 10} delayMs={150} />) : null}
-      {message.attachments.map(attachment => <AttachmentLink key={attachment.guid} label={`${isImageAttachment(attachment) ? "↗" : "↓"} ${attachment.name}  ${formatBytes(attachment.bytes)}`} onOpen={() => props.onViewAttachment?.(attachment)} />)}
+      {message.attachments.map((attachment, index) => <AttachmentLink key={attachment.guid} label={attachmentLabels[index] ?? attachment.name} onOpen={() => props.onViewAttachment?.(attachment)} />)}
       {!body && !message.attachments.length ? <Text color={colors.subtle}>Empty message</Text> : null}
-      {props.chips.length ? <Text color={colors.secondary}>{props.chips.map(chip => `${reactionGlyph[chip.reaction]}${chip.count > 1 ? ` ×${chip.count}` : ""}`).join("  ")}</Text> : null}
+      {props.chips.length ? <Text color={colors.secondary}>{reactions}</Text> : null}
       {props.showReceipt || message.status === "pending" || message.status === "failed" || message.status === "uncertain" ? <Receipt message={message} /> : null}
     </Box>
+    {mine ? <Box width={2} flexShrink={0}><Text color={props.selected ? colors.focus : colors.subtle}>{props.selected ? " ‹" : "  "}</Text></Box> : null}
   </Box>;
 });
 

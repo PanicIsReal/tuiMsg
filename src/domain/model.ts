@@ -59,7 +59,7 @@ export type AppState = {
   chats: Map<ChatGuid, Chat>; messages: Map<ChatGuid, Message[]>; contacts: Map<HandleAddress, Contact>;
   history: Map<ChatGuid, HistoryState>; drafts: Map<ChatGuid, Draft>; outbox: Map<MessageGuid, Outgoing>;
   readAt: Map<ChatGuid, number>; readPending: Map<ChatGuid, string | null>;
-  selected: ChatGuid | null; listCursor: ChatGuid | null; messageCursor: Map<ChatGuid, MessageGuid>;
+  selected: ChatGuid | null; listCursor: ChatGuid | null; listCursorTouched: boolean; messageCursor: Map<ChatGuid, MessageGuid>;
   input: InputMode; search: string; typing: Map<ChatGuid, boolean>; notice: Notice | null;
   chatsStatus: "loading" | "ready" | "error";
 };
@@ -115,7 +115,7 @@ export function emptyState(): AppState {
   return {
     connection: "connecting", capabilities: { privateApi: false, helperConnected: false },
     chats: new Map(), messages: new Map(), contacts: new Map(), history: new Map(), drafts: new Map(),
-    outbox: new Map(), readAt: new Map(), readPending: new Map(), selected: null, listCursor: null,
+    outbox: new Map(), readAt: new Map(), readPending: new Map(), selected: null, listCursor: null, listCursorTouched: false,
     messageCursor: new Map(), input: { kind: "list" }, search: "", typing: new Map(), notice: null,
     chatsStatus: "loading",
   };

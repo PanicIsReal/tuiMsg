@@ -15,7 +15,8 @@ function applyContact(handle: Handle, contacts: Map<HandleAddress, Contact>): Ha
       const candidates = new Set([local, `1${local}`, `+${local}`, `+1${local}`]
         .map((address) => contacts.get(parseHandleAddress(address)))
         .filter((candidate) => candidate !== undefined));
-      if (candidates.size > 1) return { address: handle.address, service: handle.service };
+      const names = new Set([...candidates].map((candidate) => candidate.displayName.normalize("NFC").trim()).filter(Boolean));
+      if (names.size > 1) return { address: handle.address, service: handle.service };
       contact = candidates.values().next().value;
     }
   }
@@ -137,12 +138,12 @@ function completedHistory(current: HistoryState | undefined, event: Extract<AppE
 export function reduce(state: AppState, event: AppEvent, now = Date.now()): AppState {
   switch (event.type) {
     case "input": return { ...state, input: event.input };
-    case "move-list": return { ...state, listCursor: moved(visibleChats(state), state.listCursor, event.delta) };
+    case "move-list": return { ...state, listCursor: moved(visibleChats(state), state.listCursor, event.delta), listCursorTouched: true };
     case "open-chat": {
       const chats = new Map(state.chats);
       const chat = chats.get(event.chatGuid);
       if (chat) chats.set(event.chatGuid, { ...chat, unreadCount: 0 });
-      return { ...state, chats, selected: event.chatGuid, input: { kind: "transcript", chatGuid: event.chatGuid } };
+      return { ...state, chats, selected: event.chatGuid, input: { kind: "transcript", chatGuid: event.chatGuid }, listCursorTouched: true };
     }
     case "move-message": {
       const guids = (state.messages.get(event.chatGuid) ?? []).filter((message) => message.kind !== "tapback").map((message) => message.guid);
@@ -206,7 +207,7 @@ export function reduce(state: AppState, event: AppEvent, now = Date.now()): AppS
       }
       const next = { ...state, chats };
       const visible = visibleChats(next);
-      return { ...next, listCursor: state.listCursor && chats.has(state.listCursor) ? state.listCursor : visible[0] ?? null };
+      return { ...next, listCursor: state.listCursorTouched && state.listCursor && chats.has(state.listCursor) ? state.listCursor : visible[0] ?? null };
     }
     case "chats-status": return { ...state, chatsStatus: event.status };
     case "contacts-loaded": {
@@ -266,6 +267,7 @@ export function reduce(state: AppState, event: AppEvent, now = Date.now()): AppS
       const current = next.messages.get(event.chatGuid) ?? [];
       const isNew = !current.some((message) => sameIdentity(message, pending));
       next.messages.set(event.chatGuid, mergeMessages(current, [pending]));
+      next.messageCursor.set(event.chatGuid, event.tempGuid);
       touchChat(next.chats, pending, event.chatGuid, isNew);
       const draft = next.drafts.get(event.chatGuid);
       next.drafts.set(event.chatGuid, { text: draft?.text === event.text ? "" : draft?.text ?? "", replyTo: null });
@@ -283,6 +285,7 @@ export function reduce(state: AppState, event: AppEvent, now = Date.now()): AppS
         const base = texts.slice(1).reduce(mergeText, first);
         const acked: TextMessage = { ...base, guid: event.guid, tempGuid: event.tempGuid, status: statusRank[base.status] > statusRank.sent ? base.status : "sent" };
         next.messages.set(chatGuid, mergeMessages(list.filter((message) => !matched.includes(message)), [acked]));
+        if (next.messageCursor.get(chatGuid) === event.tempGuid) next.messageCursor.set(chatGuid, event.guid);
       }
       return next;
     }

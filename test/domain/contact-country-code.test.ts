@@ -47,6 +47,16 @@ describe("North American contact matching", () => {
     expect(resolve("+17805550123", [contact("First", "+7805550123"), contact("Second", "7805550123")]).chat.title).toBe("+17805550123");
   });
 
+  it.each(["+7805550123", "+17805550123"])("resolves duplicate cards when equivalent names agree for %s", (address) => {
+    for (const contacts of [[contact("Sam", "(780) 555-0123"), contact(" Sam ", "1(780)555-0123")], [contact(" Sam ", "1(780)555-0123"), contact("Sam", "(780) 555-0123")]]) {
+      const result = resolve(address, contacts);
+      expect(result.chat.title).toBe("Sam");
+      expect(result.chat.participants[0]?.address).toBe(address);
+      expect(result.message.kind === "text" && result.message.from.contact?.displayName.trim()).toBe("Sam");
+      expect(result.message.kind === "text" && result.message.from.address).toBe(address);
+    }
+  });
+
   it("allows multiple equivalent numbers on the same contact", () => {
     expect(resolve("+15552345678", [contact("Sam", "5552345678", "15552345678")]).chat.title).toBe("Sam");
   });
