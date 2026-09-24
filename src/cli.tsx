@@ -1,6 +1,8 @@
 import { render, type Instance } from "ink";
 import { cleanupImages, configureGraphics, repaintImages, trackTerminal } from "./image-rendering.ts";
-import { detectGraphics } from "./terminal-graphics.ts";
+import { chooseTheme, loadSettings, saveSettings, themeNeedsDetection } from "./settings.ts";
+import { detectTerminal } from "./terminal-graphics.ts";
+import { onThemeChange, setTheme } from "./ui/theme.ts";
 import { parseArgs, resolveImsg } from "./config.ts";
 import { runFakeImsgRpc } from "./imsg/fake.ts";
 import { childConnector, type RpcConnector } from "./imsg/rpc.ts";
@@ -22,6 +24,9 @@ Copy uses OSC 52 so SSH sessions can write the local clipboard.
 Attachments opened over SSH are saved on the Mac and their path is shown.
 Pictures use kitty graphics or sixel (Windows Terminal 1.22+) when the terminal
 supports them, else colored blocks. TUIMSG_IMAGES=kitty|sixel|blocks overrides.
+Shift+L switches light and dark; the choice is saved. With none saved, tuimsg
+matches the terminal's background. TUIMSG_THEME=light|dark|auto overrides.
+Links open with o (over SSH: copied to your clipboard) or Ctrl+click.
 `;
 
 async function main(): Promise<void> {
@@ -82,8 +87,13 @@ async function main(): Promise<void> {
 
   process.once("SIGINT", () => { void close(); });
   process.once("SIGTERM", () => { void close(); });
-  // Asked before Ink takes stdin: whether pictures can be drawn in full (kitty or sixel).
-  configureGraphics(await detectGraphics(process.stdin, process.stdout));
+  // Asked before Ink takes stdin: whether pictures can be drawn in full (kitty or sixel),
+  // and, until a theme is chosen, whether the terminal is light or dark.
+  const settings = loadSettings();
+  const terminal = await detectTerminal(process.stdin, process.stdout, process.env, { theme: themeNeedsDetection(process.env, settings.theme) });
+  configureGraphics(terminal.graphics);
+  setTheme(chooseTheme(process.env, settings.theme, terminal.background));
+  onThemeChange((theme) => { void saveSettings({ theme }).catch(() => undefined); });
   try {
     app = render(<App session={session} />, {
       // Sixels vanish under rewritten text, so Ink's writes are watched to redraw them.

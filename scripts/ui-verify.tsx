@@ -5,6 +5,7 @@ import { stripVTControlCharacters } from "node:util";
 import { App } from "../src/ui/App.tsx";
 import { emptyState, type AppState, type Chat, type Intent, type Message, type Session } from "../src/domain/model.ts";
 import { parseChatGuid, parseHandleAddress, parseMessageGuid } from "../src/domain/ids.ts";
+import { currentTheme } from "../src/ui/theme.ts";
 
 
 
@@ -493,6 +494,42 @@ for (let index = 0; index < 12; index += 1) {
 }
 assert.equal(state.listCursor, manyChats[12]!.guid);
 assert.match(setup.captureCharFrame(), /Conversation 12 visible cursor/);
+
+// A selected message with a link offers o, which opens that link.
+const linkMessage = parseMessageGuid("message-link");
+const link = "https://www.instagram.com/reel/DOh1/?igsh=MW5";
+state = { ...state, selected: secondChat, input: { kind: "transcript", chatGuid: secondChat },
+  chats: new Map(state.chats).set(secondChat, { guid: secondChat, kind: "dm", service: "iMessage", title: "Alex", participants: [friend], unreadCount: 0, muted: false, lastMessage: { body: `Watch ${link} lol`, sentAt: Date.now(), isFromMe: false } }),
+  messages: new Map(state.messages).set(secondChat, [{ guid: linkMessage, chatGuid: secondChat, kind: "text", from: friend, isFromMe: false, body: `Watch ${link} lol`, attachments: [], sentAt: Date.now(), status: "sent" }]),
+  messageCursor: new Map(state.messageCursor).set(secondChat, linkMessage) };
+for (const listener of listeners) listener();
+setup.resize(120, 30);
+await setup.flush();
+assert.match(setup.captureCharFrame(), /o open link/, "the status bar must offer the selected message's link");
+assert.ok((app.lastFrame() ?? "").includes(`\x1b]8;;${link}\x1b\\`), "links must be OSC 8 hyperlinks for Ctrl+click");
+setup.mockInput.pressKey("o");
+await setup.flush();
+assert.ok(intents.some((intent) => intent.type === "open-link" && intent.url === link));
+assert.ok(!intents.some((intent) => intent.type === "attachment" && intent.action === "open" && intents.at(-1) === intent));
+
+// Shift+L switches the theme outside the composer, and is a plain letter inside it.
+assert.equal(currentTheme(), "dark");
+setup.mockInput.pressKey("L");
+await setup.flush();
+assert.equal(currentTheme(), "light");
+assert.ok(intents.some((intent) => intent.type === "notice" && intent.notice?.text.startsWith("Light mode")));
+setup.mockInput.pressKey("L");
+await setup.flush();
+assert.equal(currentTheme(), "dark");
+state = { ...state, input: { kind: "composer", chatGuid: secondChat } };
+for (const listener of listeners) listener();
+await setup.flush();
+setup.mockInput.pressKey("L");
+await setup.flush();
+assert.equal(currentTheme(), "dark");
+assert.equal(state.drafts.get(secondChat)?.text, "L");
+state = { ...state, input: { kind: "search", returnTo: { kind: "transcript", chatGuid: secondChat } } };
+for (const listener of listeners) listener();
 
 setup.resize(50, 16);
 session.act({ type: "input", input: { kind: "help", returnTo: { kind: "list" } } });

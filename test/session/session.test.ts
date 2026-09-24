@@ -378,3 +378,45 @@ describe("attachment previews", () => {
     await expect(session.loadAttachment(image)).rejects.toThrow("Session is closed");
   });
 });
+
+describe("opening links", () => {
+  function linkSession(ssh: boolean) {
+    const opened: string[] = [];
+    const copied: string[] = [];
+    const session = createSession({
+      connect: () => new FakeImsg().connect(), journal: memoryJournal(), ssh,
+      openLink: async (url) => { opened.push(url); },
+      clipboard: (text) => { copied.push(text); },
+    });
+    return { session, opened, copied };
+  }
+
+  it("opens a link in this Mac's browser in a local session", async () => {
+    const { session, opened, copied } = linkSession(false);
+    session.act({ type: "open-link", url: "https://example.com/a" });
+    await eventually(() => session.getSnapshot().notice !== null);
+    expect(opened).toEqual(["https://example.com/a"]);
+    expect(copied).toEqual([]);
+    expect(session.getSnapshot().notice).toEqual({ kind: "info", text: "Opened in your browser" });
+    await session.close();
+  });
+
+  it("copies the link to the SSH user's clipboard instead of opening it on the Mac", async () => {
+    const { session, opened, copied } = linkSession(true);
+    session.act({ type: "open-link", url: "https://example.com/b" });
+    await eventually(() => session.getSnapshot().notice !== null);
+    expect(opened).toEqual([]);
+    expect(copied).toEqual(["https://example.com/b"]);
+    expect(session.getSnapshot().notice?.text).toMatch(/Link copied/);
+    await session.close();
+  });
+
+  it("refuses anything but a web link", async () => {
+    const { session, opened } = linkSession(false);
+    session.act({ type: "open-link", url: "file:///etc/passwd" });
+    await eventually(() => session.getSnapshot().notice !== null);
+    expect(opened).toEqual([]);
+    expect(session.getSnapshot().notice).toEqual({ kind: "error", text: "Only web links can be opened." });
+    await session.close();
+  });
+});

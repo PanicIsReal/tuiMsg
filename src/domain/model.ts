@@ -88,6 +88,7 @@ export type Intent =
   | { type: "create-chat"; addresses: string; text: string; service: Service }
   | { type: "attachment"; attachment: Attachment; action: "open" | "save" }
   | { type: "copy"; text: string }
+  | { type: "open-link"; url: string }
   | { type: "notice"; notice: Notice | null }
   | { type: "quit" };
 export type AppEvent = Intent

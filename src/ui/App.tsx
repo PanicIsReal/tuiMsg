@@ -12,7 +12,8 @@ import { Help } from "./Help.tsx";
 import { List } from "./List.tsx";
 import { AttachmentModal, ConfirmModal, NewChatModal, ReactionModal, SearchModal } from "./Modals.tsx";
 import { Transcript } from "./Transcript.tsx";
-import { colors } from "./theme.ts";
+import { colors, currentTheme, setTheme, useTheme } from "./theme.ts";
+import { firstLink } from "../domain/links.ts";
 
 const REACTIONS: Reaction[] = ["love", "like", "dislike", "laugh", "emphasize", "question"];
 export type AppProps = { session: Session };
@@ -23,6 +24,7 @@ export function App(props: AppProps) {
 
 function AppContent({ session }: AppProps) {
   const state = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
+  useTheme();
   const { columns, rows } = useWindowSize();
   const size = { width: columns, height: rows };
   const chats = useMemo(() => sortedChats(state.chats, state.search), [state.chats, state.search]);
@@ -104,7 +106,7 @@ function AppContent({ session }: AppProps) {
           </Box>
         ) : null}
       </Box>
-      <StatusBar state={state} narrow={narrow} width={size.width} />
+      <StatusBar state={state} narrow={narrow} width={size.width} selected={selected ? selectedMessage(state.messageCursor.get(selected.guid), messages) : undefined} />
       <Overlay input={input} state={state} messages={messages} session={session} width={size.width} height={size.height} />
     </Box>
   );
@@ -185,6 +187,12 @@ function routeKey(key: KeyEvent, context: RouteContext): void {
     return;
   }
   if (input.kind !== "composer" && key.name === "q") { session.act({ type: "quit" }); return; }
+  if (input.kind !== "composer" && key.name === "l" && key.shift) {
+    const theme = currentTheme() === "dark" ? "light" : "dark";
+    setTheme(theme);
+    session.act({ type: "notice", notice: { kind: "info", text: theme === "light" ? "Light mode · Shift+L for dark" : "Dark mode · Shift+L for light" } });
+    return;
+  }
   if (key.name === "tab") { cyclePane(input, state.selected, session); return; }
   if (input.kind !== "composer" && key.name === "/") {
     session.act({ type: "input", input: { kind: "search", returnTo: input } }); return;
@@ -214,6 +222,7 @@ function routeTranscript(key: KeyEvent, context: RouteContext): boolean {
   if (!selected) return false;
   const chatGuid = selected.guid;
   const message = selectedMessage(state.messageCursor.get(chatGuid), messages);
+  const link = message?.kind === "text" ? firstLink(message.body) : undefined;
   if (key.name === "j" || key.name === "down") session.act({ type: "move-message", chatGuid, delta: 1 });
   else if (key.name === "k" || key.name === "up") session.act({ type: "move-message", chatGuid, delta: -1 });
   else if (key.name === "escape") session.act({ type: "input", input: { kind: "list" } });
@@ -234,6 +243,7 @@ function routeTranscript(key: KeyEvent, context: RouteContext): boolean {
     const attachment = message.attachments.find(isImageAttachment);
     if (attachment) viewAttachment(session, attachment, { kind: "transcript", chatGuid });
   }
+  else if (key.name === "o" && link) session.act({ type: "open-link", url: link });
   else if ((key.name === "o" || key.name === "s") && message?.kind === "text" && message.attachments.length) {
     const attachment = message.attachments.find(isImageAttachment) ?? message.attachments[0]!;
     session.act({ type: "attachment", attachment, action: key.name === "o" ? "open" : "save" });
@@ -286,10 +296,16 @@ const HINTS: Record<string, [string, string][]> = {
   image: [["o", "open"], ["s", "save"], ["esc", "close"]],
 };
 
-function StatusBar(props: { state: ReturnType<Session["getSnapshot"]>; narrow: boolean; width: number }) {
+function StatusBar(props: { state: ReturnType<Session["getSnapshot"]>; narrow: boolean; width: number; selected?: Message | undefined }) {
   const { connection, notice, input } = props.state;
   const connectionColor = connection === "online" ? colors.sms : connection === "no-access" ? colors.failed : colors.warning;
-  const hints = HINTS[input.kind] ?? [];
+  const hints = [...(HINTS[input.kind] ?? [])];
+  // What the selected message offers comes first.
+  const message = props.selected?.kind === "text" ? props.selected : undefined;
+  if (input.kind === "transcript" && message) {
+    const offer: [string, string] | undefined = firstLink(message.body) ? ["o", "open link"] : message.attachments.some(isImageAttachment) ? ["v", "view"] : message.attachments.length ? ["o", "open"] : undefined;
+    if (offer) hints.splice(1, 0, offer);
+  }
   const room = Math.max(0, props.width - 24);
   const shown: [string, string][] = [];
   let used = 0;
@@ -336,7 +352,7 @@ function Overlay(props: {
   };
   let content: React.ReactNode = null;
   if (props.input.kind === "image") content = <ImageViewer attachment={props.input.attachment} session={props.session} width={props.width - 4} height={props.height - 2} />;
-  else if (props.input.kind === "help") content = <Help width={Math.min(52, props.width - 4)} height={Math.min(14, props.height - 1)} />;
+  else if (props.input.kind === "help") content = <Help width={Math.min(52, props.width - 4)} height={Math.min(15, props.height - 1)} />;
   else if (props.input.kind === "search") content = <SearchModal value={props.state.search}
     onChange={(text) => props.session.act({ type: "search-set", text })}
     onClose={() => props.session.act({ type: "input", input: props.input.kind === "search" ? props.input.returnTo : { kind: "list" } })} />;

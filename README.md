@@ -52,6 +52,7 @@ Things that behave differently in a remote terminal:
 
 - **New lines:** press `Ctrl+J`. Over SSH, `Shift+Enter` arrives as a plain `Enter` and sends the message, and Windows Terminal uses `Alt+Enter` for full screen.
 - **Copying:** `y` copies the selected message through OSC 52. Windows Terminal supports it, as do most modern terminals; some, such as iTerm2, need clipboard access enabled in their settings. PuTTY does not support it, and `tuimsg` cannot detect that, so it still reports "Copied." In tmux, enable `set -g set-clipboard on` and `set -g allow-passthrough on`. To select part of a message with the mouse, hold `Shift` while dragging in Windows Terminal and most other terminals.
+- **Links:** links are clickable: hold `Ctrl` and click one to open it in your browser. Windows Terminal supports this even while `tuimsg` uses the mouse. `o` on a message with a link copies the link to your clipboard, since a browser started on the Mac would open there, not in front of you. In a local session on the Mac, `o` opens it in your default browser.
 - **Attachments:** files live on the Mac. `o` and `s` save a copy under `~/.config/tuimsg/attachments` and show its path; fetch it with `scp your-mac:<path> .`. In a local session on the Mac, `o` opens the original in its app.
 - **Read state:** leaving a conversation open marks new messages in it as read, even when your terminal is minimized or tmux is detached.
 - **Image previews:** Windows Terminal 1.22 and later shows full-resolution photos through sixel. `tuimsg` asks the terminal at startup whether it supports sixel and how many pixels a cell holds, so this also works over SSH. Older Windows Terminal releases, tmux without sixel support, and terminals that don't answer get color half-block previews. See [Images](#images).
@@ -66,7 +67,13 @@ Without the bridge, those keys explain what is missing instead of failing later.
 
 ## Reading the screen
 
-Conversations are on the left; the newest is at the top, a blue dot marks unread ones, and SMS conversations are tagged in green. Every message hangs off a bar on its left: blue for yours, gray for theirs, and a steady color for each person in a group. A run of messages from one person shares one bar. The selected message's bar turns solid white, and reactions sit at the right of the message they react to. The bottom line shows the keys for whatever has focus; `?` lists them all.
+Conversations are on the left; the newest is at the top, a blue dot marks unread ones, and SMS conversations are tagged in green. Every message hangs off a bar on its left: blue for yours, gray for theirs, and a steady color for each person in a group. A run of messages from one person shares one bar. The selected message's bar turns solid, and reactions sit at the right of the message they react to. The bottom line shows the keys for whatever has focus, starting with what the selected message offers, such as `o open link`; `?` lists them all.
+
+## Light and dark
+
+Press `Shift+L` outside the composer to switch between a light and a dark theme. The choice is saved in `~/.config/tuimsg/settings.json` (under `TUIMSG_HOME` when set). Until you choose, `tuimsg` asks the terminal for its background color at startup and matches it, falling back to dark when the terminal does not answer. `TUIMSG_THEME=light`, `dark`, or `auto` overrides the saved choice.
+
+Both themes use the xterm 256-color palette, so an SSH session without truecolor draws exactly the same colors as a local one.
 
 ## Keyboard controls
 
@@ -83,13 +90,15 @@ Conversations are on the left; the newest is at the top, a blue dot marks unread
 | Panes | `Tab` | Change focus |
 | Outside composer | `/`, `n`, `?` | Search, new conversation, help |
 | Transcript | `y`, `r`, `t`, `a` | Copy, reply, react, choose an attachment |
-| Transcript | `v`, `o`, `s` | Expand an image, open, save the selected message's attachment |
+| Transcript | `o` | Open the selected message's link (over SSH, copy it), else its attachment |
+| Transcript | `v`, `s` | Expand an image, save the selected message's attachment |
 | Conversation list | `Shift+R` | Reload conversations, or restart imsg if it stopped |
 | Transcript | `g`, `Shift+R`, `m` | Load older history, retry history, retry marking read |
 | Transcript | `!` | Retry the selected failed or uncertain send |
 | New conversation | `Tab`, `Ctrl+T`, `Ctrl+S` | Change field, switch service, send first message |
 | Attachment chooser | `j` / `k`, `v` / `Enter`, `s`, `o` | Select, preview, save, open |
 | Image viewer | `o`, `s`, `Esc` | Open original, save original, close |
+| Outside composer | `Shift+L` | Switch between light and dark |
 | Outside composer | `q` | Quit |
 | Anywhere | `Ctrl+C` | Quit |
 
@@ -117,7 +126,7 @@ How a photo is drawn depends on the terminal:
 
 Set `TUIMSG_IMAGES=kitty`, `sixel`, or `blocks` to override the choice, for example `blocks` on a slow link. Opening or saving always uses the original file. Previews decode files up to 32 MB and 40 million pixels. GIFs exceeding 60 frames or a total 40-million-pixel animation budget show a still frame.
 
-Message text, names, and filenames are cleaned of terminal control characters before display, so a message cannot ring the bell, move the cursor, or hide a link's destination.
+Message text, names, and filenames are cleaned of terminal control characters before display, so a message cannot ring the bell, move the cursor, or hide a link's destination. A link's text is always its own address, so what you click is what you see.
 
 ## Development and verification
 
@@ -132,7 +141,7 @@ bun run smoke:images
 
 The tests cover the domain, the imsg JSON-RPC client and parser, the session against an in-memory imsg, persistence, and Ink input and rendered frames. `--fake` runs the same program as its own imsg child, so the smoke tests exercise the real stdio path without a Mac. The smoke test needs a Bun release with `Bun.Terminal` support. It launches the compiled app in a real PTY and checks sends, text and Enter arriving in one read, `Ctrl+J`, recipient-specific drafts, search, resize, and terminal restoration. Test artifacts are written under `.audit/pty`.
 
-`test:colors` captures the full Ink interface at 80 and 180 columns with 256-color output. It checks for unpainted cells on a white terminal background and writes ANSI, SVG, and PNG previews under `.audit/colors`. The palette tests also cover 16-color and truecolor output.
+`test:colors` captures the full Ink interface in both themes at 80 and 180 columns with 256-color output. It checks that every cell paints its own background, so neither theme shows the terminal's default through, and writes ANSI, SVG, and PNG previews under `.audit/colors`. The palette tests also cover 16-color and truecolor output, check that 256-color and truecolor terminals draw the same colors, and check text contrast.
 
 `smoke:images` checks local attachment previews, all three rendering paths, expanded viewing, byte-for-byte original saving, resize, and cleanup through the compiled app. Its sixel run answers the startup probe the way Windows Terminal does. The unit tests check sixel output by decoding it back to pixels, and replay the app's output through a model of Windows Terminal's sixel rules to confirm that every preview stays whole as the screen redraws and nothing stale is left behind. None of this substitutes for viewing the result in a real terminal.
 

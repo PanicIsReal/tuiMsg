@@ -52,7 +52,7 @@ export async function saveAttachment(args: {
 }
 
 export async function openLocalFile(path: string): Promise<void> {
-  if (process.platform !== "darwin") throw new Error("Opening attachments is supported on macOS only.");
+  if (process.platform !== "darwin") throw new Error("Opening files and links needs macOS.");
   await new Promise<void>((resolve, reject) => {
     const child = spawn("open", [path], { stdio: "ignore", detached: false });
     child.once("error", reject);

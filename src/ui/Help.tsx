@@ -7,10 +7,11 @@ const KEYS: [string, string][] = [
   ["tab", "next pane"], ["^J", "new line"],
   ["r", "reply"], ["t", "react"],
   ["y", "copy"], ["v", "view image"],
-  ["a", "attachments"], ["o s", "open · save"],
-  ["g", "older"], ["!", "retry send"],
+  ["o", "open link"], ["s", "save file"],
+  ["a", "attachments"], ["g", "older"],
+  ["!", "retry send"], ["m", "retry read"],
   ["/", "search"], ["n", "new chat"],
-  ["PgUp", "scroll"], ["m", "retry read"],
+  ["PgUp", "scroll"], ["L", "light / dark"],
   ["?", "help"], ["q", "quit"],
 ];
 const KEY = 5;

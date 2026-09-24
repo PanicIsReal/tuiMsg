@@ -13,7 +13,7 @@ const MAX_BYTES = 32 * 1024 * 1024;
 const MAX_PIXELS = 40_000_000;
 const MAX_FRAMES = 60;
 const MAX_SIXEL_PIXELS = 6_000_000;
-const BACKGROUND = "#181B21";
+const BACKGROUND = "#121212";
 // A half-block cell shows two square pixels stacked, so it is twice as tall as wide.
 const HALF_BLOCK_CELL: CellSize = { width: 1, height: 2 };
 const run = promisify(execFile);
@@ -45,7 +45,8 @@ export function imageCellSize(width: number, height: number, columns: number, ro
   };
 }
 
-export async function decodeImage(bytes: Uint8Array, columns: number, rows: number, signal?: AbortSignal): Promise<DecodedImage> {
+// `background` fills transparent pixels (stickers, PNGs); pass the canvas color behind them.
+export async function decodeImage(bytes: Uint8Array, columns: number, rows: number, signal?: AbortSignal, background = BACKGROUND): Promise<DecodedImage> {
   signal?.throwIfAborted();
   if (!bytes.length || bytes.length > MAX_BYTES) throw new Error("Image exceeds the 32 MB preview limit.");
   let source: Buffer = Buffer.from(bytes);
@@ -76,9 +77,9 @@ export async function decodeImage(bytes: Uint8Array, columns: number, rows: numb
     signal?.throwIfAborted();
     const pipeline = sharp(source, { ...options, page, pages: 1 }).autoOrient();
     const png = graphics.protocol === "kitty" ? await pipeline.clone().resize({ width: 2560, height: 2560, fit: "inside", withoutEnlargement: true }).png().toBuffer() : undefined;
-    const strips = sixel ? await sixelStrips(pipeline.clone(), size, graphics.cell) : undefined;
+    const strips = sixel ? await sixelStrips(pipeline.clone(), size, graphics.cell, background) : undefined;
     const { data, info } = await pipeline.resize(size.width, size.height * 2, { fit: "fill" })
-      .flatten({ background: BACKGROUND }).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+      .flatten({ background }).removeAlpha().raw().toBuffer({ resolveWithObject: true });
     frames.push({ ansi: halfBlocks(data, info.width, info.height, info.channels), delay: Math.max(80, metadata.delay?.[page] ?? 100), ...(png ? { png } : {}), ...(strips ? { sixel: strips } : {}) });
   }
   return { frames, ...size, still: pages > frameCount };
@@ -86,11 +87,11 @@ export async function decodeImage(bytes: Uint8Array, columns: number, rows: numb
 
 // Quantized once so every strip shares one palette; each strip then declares only the
 // registers it uses.
-async function sixelStrips(pipeline: Sharp, size: { width: number; height: number }, cell: CellSize): Promise<string[] | undefined> {
+async function sixelStrips(pipeline: Sharp, size: { width: number; height: number }, cell: CellSize, background: string): Promise<string[] | undefined> {
   const width = size.width * cell.width;
   const height = size.height * cell.height;
   if (width * height > MAX_SIXEL_PIXELS) return undefined;
-  const png = await pipeline.resize(width, height, { fit: "fill" }).flatten({ background: BACKGROUND })
+  const png = await pipeline.resize(width, height, { fit: "fill" }).flatten({ background })
     .png({ palette: true, colours: 256, dither: 1, effort: 4 }).toBuffer();
   const image = decodeIndexedPng(png);
   return Array.from({ length: size.height }, (_, row) => encodeSixel(stripOf(image, row * cell.height, cell.height)));

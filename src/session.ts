@@ -31,6 +31,8 @@ export type SessionOptions = {
   clipboard?: (text: string) => void | Promise<void>;
   saveAttachment?: typeof saveAttachment;
   openFile?: (path: string) => Promise<void>;
+  // Opens a web link in this Mac's browser; over SSH links go to the clipboard instead.
+  openLink?: (url: string) => Promise<void>;
   readAttachment?: (attachment: Attachment) => Promise<Uint8Array>;
   attachmentDirectory?: string;
   ssh?: boolean;
@@ -44,6 +46,7 @@ export function createSession(options: SessionOptions): Session {
   const clipboard = options.clipboard ?? writeClipboard;
   const saveFile = options.saveAttachment ?? saveAttachment;
   const openFile = options.openFile ?? openLocalFile;
+  const openLinkHere = options.openLink ?? openLocalFile;
   const loadBytes = options.readAttachment ?? readAttachment;
   const restartDelays = options.restartDelays ?? RESTART_DELAYS;
   const now = options.now ?? Date.now;
@@ -553,6 +556,7 @@ export function createSession(options: SessionOptions): Session {
       case "create-chat": createChat(intent); break;
       case "attachment": track(handleAttachment(intent)).catch(report); break;
       case "copy": track(Promise.resolve(clipboard(intent.text))).then(() => dispatch({ type: "notice", notice: { kind: "info", text: "Copied." } })).catch(report); break;
+      case "open-link": track(openLink(intent.url)).catch(report); break;
       case "quit": track(Promise.resolve(options.quit?.())).catch(report); break;
     }
   }
@@ -610,6 +614,19 @@ export function createSession(options: SessionOptions): Session {
           if (next) startImageLoad(next);
         }
       });
+  }
+
+  // A browser launched from here would open on the Mac, not in front of an SSH user, so the
+  // link goes to their clipboard (OSC 52); Ctrl+click opens it where the terminal supports it.
+  async function openLink(url: string): Promise<void> {
+    if (!/^https?:\/\//i.test(url)) throw new Error("Only web links can be opened.");
+    if (options.ssh) {
+      await clipboard(url);
+      dispatch({ type: "notice", notice: { kind: "info", text: "Link copied · Ctrl+click it to open in your browser" } });
+      return;
+    }
+    await openLinkHere(url);
+    dispatch({ type: "notice", notice: { kind: "info", text: "Opened in your browser" } });
   }
 
   async function handleAttachment(intent: Extract<Intent, { type: "attachment" }>): Promise<void> {

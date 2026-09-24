@@ -2,7 +2,7 @@ import { memo } from "react";
 import { Box, Text } from "ink";
 import type { Draft, Service } from "../domain/model.ts";
 import { TextInput } from "./TextInput.tsx";
-import { colors } from "./theme.ts";
+import { colors, useTheme } from "./theme.ts";
 
 export type ComposerProps = {
   draft: Draft; service: Service; focused: boolean;
@@ -16,6 +16,7 @@ export function composerHeight(draft: Draft, focused: boolean): number {
 }
 // A hairline, then the input with the service as its placeholder, like the Messages field.
 export const Composer = memo(function Composer(props: ComposerProps) {
+  useTheme();
   const height = composerHeight(props.draft, props.focused);
   const placeholder = props.service === "SMS" ? "Text Message" : "iMessage";
   const prompt = props.focused ? colors.accent : colors.subtle;

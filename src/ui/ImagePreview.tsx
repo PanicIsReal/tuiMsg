@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Box, Text, measureElement, useBoxMetrics, type DOMElement } from "ink";
 import type { Attachment, Session } from "../domain/model.ts";
 import { activeGraphics, decodeImage, observeImageVisibility, registerImage, repaintImages, type DecodedImage } from "../image-rendering.ts";
-import { colors } from "./theme.ts";
+import { canvasHex, colors, useTheme } from "./theme.ts";
 
 type PreviewState = { kind: "loading" } | { kind: "ready"; image: DecodedImage } | { kind: "error" };
 
@@ -47,6 +47,7 @@ export function ImagePreview(props: ImagePreviewProps) {
   const ref = useRef<DOMElement>(null);
   useBoxMetrics(ref);
   const [visible, setVisible] = useState(false);
+  const theme = useTheme();
   useLayoutEffect(repaintImages);
   useEffect(() => observeImageVisibility(() => {
     if (!ref.current) return;
@@ -68,7 +69,7 @@ export function ImagePreview(props: ImagePreviewProps) {
   useEffect(() => {
     if (!visible) { setState({ kind: "loading" }); return; }
     const graphics = activeGraphics();
-    const key = `${props.attachment.guid}|${props.width}x${props.height}|${graphics.protocol}|${graphics.cell.width}x${graphics.cell.height}`;
+    const key = `${props.attachment.guid}|${props.width}x${props.height}|${graphics.protocol}|${graphics.cell.width}x${graphics.cell.height}|${theme}`;
     setFrameIndex(0);
     const cached = recall(key);
     if (cached) { setState({ kind: "ready", image: cached }); return; }
@@ -77,12 +78,12 @@ export function ImagePreview(props: ImagePreviewProps) {
     setState({ kind: "loading" });
     const timer = setTimeout(() => {
       void props.loadAttachment(props.attachment)
-        .then(bytes => { if (!active) throw new Error("Preview closed"); return decodeImage(bytes, props.width, props.height, controller.signal); })
+        .then(bytes => { if (!active) throw new Error("Preview closed"); return decodeImage(bytes, props.width, props.height, controller.signal, canvasHex(theme)); })
         .then(image => { remember(key, image); if (active) setState({ kind: "ready", image }); })
         .catch(() => { if (active) setState({ kind: "error" }); });
     }, props.delayMs ?? 0);
     return () => { active = false; controller.abort(); clearTimeout(timer); };
-  }, [props.attachment.guid, props.loadAttachment, props.delayMs, props.width, props.height, visible]);
+  }, [props.attachment.guid, props.loadAttachment, props.delayMs, props.width, props.height, visible, theme]);
   const frame = state.kind === "ready" ? state.image.frames[frameIndex] ?? state.image.frames[0] : undefined;
   useEffect(() => {
     if (!visible || state.kind !== "ready" || state.image.frames.length < 2 || !frame) return;

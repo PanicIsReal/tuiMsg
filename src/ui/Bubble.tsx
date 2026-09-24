@@ -4,8 +4,9 @@ import { ImagePreview } from "./ImagePreview.tsx";
 import { isImageAttachment } from "../attachments.ts";
 import { memo, useRef } from "react";
 import { appMessageLabel, type Attachment, type Message, type TapbackChip } from "../domain/model.ts";
-import { bar, colors, reactionGlyph } from "./theme.ts";
+import { bar, colors, reactionGlyph, useTheme } from "./theme.ts";
 import { cleanText } from "../domain/text.ts";
+import { hyperlink, linkParts } from "../domain/links.ts";
 
 export type BubbleProps = {
   message: Exclude<Message, { kind: "tapback" }>;
@@ -27,6 +28,7 @@ const MESSAGE_BAR = bar("▎");
 const SELECTED_BAR = bar("▌");
 
 export const Bubble = memo(function Bubble(props: BubbleProps) {
+  useTheme();
   const element = useRef<DOMElement>(null);
   useMouse(element, event => {
     if (event.kind !== "click" || event.button !== "left") return false;
@@ -70,8 +72,6 @@ export const Bubble = memo(function Bubble(props: BubbleProps) {
   </Box>;
 });
 
-const URL = /(https?:\/\/[^\s]+)/g;
-
 // Ink wraps with whitespace kept, so a word that ends exactly at the edge pushes the space
 // after it to the start of the next line. Only wrapped lines lose it; each typed line is
 // its own Text, so indentation after a real newline stays.
@@ -81,7 +81,7 @@ const dropWrapSpace = (line: string, index: number) => index === 0 ? line : line
 function Body(props: { text: string }) {
   return <Box flexDirection="column">
     {props.text.split("\n").map((line, row) => <Transform key={row} transform={dropWrapSpace}>
-      <Text color={colors.text}>{line ? line.split(URL).map((part, index) => index % 2 ? <Text key={index} color={colors.accent} underline>{part}</Text> : part) : " "}</Text>
+      <Text color={colors.text}>{line ? linkParts(line).map((part, index) => part.url ? <Text key={index} color={colors.accent} underline>{hyperlink(part.url, part.text)}</Text> : part.text) : " "}</Text>
     </Transform>)}
   </Box>;
 }

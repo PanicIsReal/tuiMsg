@@ -1,7 +1,7 @@
 import { useMouse } from "./mouse.tsx";
 import { Box, Text, type DOMElement } from "ink";
 import { memo, useRef } from "react";
-import { colors } from "./theme.ts";
+import { colors, useTheme } from "./theme.ts";
 
 export type ListRowProps = {
   id: string;
@@ -20,6 +20,7 @@ export type ListRowProps = {
 };
 
 export const ListRow = memo(function ListRow(props: ListRowProps) {
+  useTheme();
   const element = useRef<DOMElement>(null);
   useMouse(element, event => {
     if (event.kind !== "click" || event.button !== "left") return false;

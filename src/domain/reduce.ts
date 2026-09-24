@@ -173,7 +173,7 @@ export function reduce(state: AppState, event: AppEvent, now = Date.now()): AppS
       const visible = visibleChats(next);
       return { ...next, listCursor: state.listCursor && visible.includes(state.listCursor) ? state.listCursor : visible[0] ?? null };
     }
-    case "send": case "load-history": case "react": case "create-chat": case "attachment": case "copy": case "quit": return state;
+    case "send": case "load-history": case "react": case "create-chat": case "attachment": case "copy": case "open-link": case "quit": return state;
     case "retry-send": {
       const outgoing = state.outbox.get(event.tempGuid);
       if (!outgoing) return state;
