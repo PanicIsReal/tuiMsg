@@ -26,11 +26,50 @@ export function patchStyledChars(source: string, path = "styledChars.js"): strin
   return source.replace(STYLE_DIFF, `if (!sameStyles(chars[i - 1].styles, char.styles)) ${STYLE_DIFF}`) + SAME_STYLES;
 }
 
+// Ink keeps caches of each line's parsed styles and widths, but builds a new Output, caches
+// and all, for every frame, so every line of every frame was parsed again: the coloured half
+// blocks under each picture most of all. Shared across frames, and bounded, unchanged lines
+// cost a lookup. Lines clipped by a box are cut once per clip for the same reason.
+const OUTPUT_CACHE_LIMIT = 20_000;
+const OUTPUT_EDITS: [string, string][] = [
+  ["    styledChars = new Map();\n", `    styledChars = new Map();
+    slices = new Map();
+    getSlice(line, from, to) {
+        const key = from + ":" + to + ":" + line;
+        let cached = this.slices.get(key);
+        if (cached === undefined) {
+            cached = sliceAnsi(line, from, to);
+            if (this.slices.size >= ${OUTPUT_CACHE_LIMIT}) this.slices.clear();
+            this.slices.set(key, cached);
+        }
+        return cached;
+    }
+`],
+  ["            this.styledChars.set(line, cached);", `            if (this.styledChars.size >= ${OUTPUT_CACHE_LIMIT}) this.styledChars.clear();
+            this.styledChars.set(line, cached);`],
+  ["            this.widths.set(text, cached);", `            if (this.widths.size >= ${OUTPUT_CACHE_LIMIT}) this.widths.clear();
+            this.widths.set(text, cached);`],
+  ["            this.blockWidths.set(text, cached);", `            if (this.blockWidths.size >= ${OUTPUT_CACHE_LIMIT}) this.blockWidths.clear();
+            this.blockWidths.set(text, cached);`],
+  ["export default class Output {", "const sharedCaches = new OutputCaches();\nexport default class Output {"],
+  ["    caches = new OutputCaches();", "    caches = sharedCaches;"],
+  ["                            return sliceAnsi(line, from, to);", "                            return this.caches.getSlice(line, from, to);"],
+];
+export function patchOutput(source: string, path = "output.js"): string {
+  return OUTPUT_EDITS.reduce((text, [from, to]) => {
+    if (text.split(from).length !== 2) throw new Error(`${path} no longer matches; update scripts/build.ts`);
+    return text.replace(from, to);
+  }, source);
+}
+
 const plugins: BunPlugin = {
   name: "tuimsg",
   setup(build) {
     build.onLoad({ filter: /@alcalzone[\\/]ansi-tokenize[\\/]build[\\/]styledChars\.js$/ }, async (args) => ({
       contents: patchStyledChars(await Bun.file(args.path).text(), args.path), loader: "js",
+    }));
+    build.onLoad({ filter: /[\\/]ink[\\/]build[\\/]output\.js$/ }, async (args) => ({
+      contents: patchOutput(await Bun.file(args.path).text(), args.path), loader: "js",
     }));
     // Every string-width import, Ink's included, goes through the remembering wrapper.
     build.onResolve({ filter: /^string-width$/ }, (args) => args.importer === rememberedWidth ? undefined : { path: rememberedWidth });
