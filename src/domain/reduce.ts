@@ -217,13 +217,17 @@ export function reduce(state: AppState, event: AppEvent, now = Date.now()): AppS
       return { ...next, listCursor: state.listCursor && chats.has(state.listCursor) ? state.listCursor : visible[0] ?? null };
     }
     case "chats-status": return { ...state, chatsStatus: event.status };
-    case "chat-preview": {
-      const chat = state.chats.get(event.chatGuid);
-      if (!chat || (chat.lastMessage && chat.lastMessage.sentAt > event.message.sentAt)) return state;
-      const chats = new Map(state.chats);
-      const fromMe = "isFromMe" in event.message && event.message.isFromMe;
-      chats.set(event.chatGuid, { ...chat, lastMessage: { body: previewBody(event.message), sentAt: event.message.sentAt, isFromMe: fromMe, guid: event.message.guid } });
-      return { ...state, chats };
+    case "chat-previews": {
+      // One copy of the chat map for the whole batch.
+      let chats: Map<ChatGuid, Chat> | undefined;
+      for (const { chatGuid, message } of event.previews) {
+        const chat = (chats ?? state.chats).get(chatGuid);
+        if (!chat || (chat.lastMessage && chat.lastMessage.sentAt > message.sentAt)) continue;
+        chats ??= new Map(state.chats);
+        const fromMe = "isFromMe" in message && message.isFromMe;
+        chats.set(chatGuid, { ...chat, lastMessage: { body: previewBody(message), sentAt: message.sentAt, isFromMe: fromMe, guid: message.guid } });
+      }
+      return chats ? { ...state, chats } : state;
     }
     case "chat-service": {
       const chat = state.chats.get(event.chatGuid);

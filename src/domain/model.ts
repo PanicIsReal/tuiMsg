@@ -98,7 +98,7 @@ export type AppEvent = Intent
   | { type: "capabilities"; capabilities: Capabilities }
   | { type: "chats-loaded"; chats: Chat[] }
   | { type: "chats-status"; status: AppState["chatsStatus"] }
-  | { type: "chat-preview"; chatGuid: ChatGuid; message: Message }
+  | { type: "chat-previews"; previews: { chatGuid: ChatGuid; message: Message }[] }
   | { type: "chat-service"; chatGuid: ChatGuid; service: Service; at: number }
   | { type: "contacts-loaded"; contacts: Contact[] }
   | { type: "history-loading"; chatGuid: ChatGuid; request: number; mode: PageMode }

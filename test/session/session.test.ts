@@ -334,6 +334,70 @@ describe("session over imsg", () => {
   });
 });
 
+describe("loading in the background", () => {
+  // A list long enough to need two pages, each chat merged (any;-;) so its service comes
+  // from its newest message.
+  const address = (index: number) => `+1555200${String(index).padStart(4, "0")}`;
+  const many = (count: number): FakeImsgOptions => ({
+    chats: Array.from({ length: count }, (_, index) => ({ id: index + 1, guid: `any;-;${address(index)}`, identifier: address(index), service: "SMS" as const, is_group: false, participants: [address(index)], unread_count: 0 })),
+    messages: Array.from({ length: count }, (_, index) => ({ id: index + 1, chat_id: index + 1, guid: `newest-${index}`, sender: address(index), is_from_me: false, text: `hello ${index}`, created_at: Date.now() - (index + 1) * 60_000, service: "iMessage" as const })),
+  });
+  // Records each request as it leaves and each answer as it comes back.
+  function watched(fake: FakeImsg) {
+    const log: ({ sent: number; method: string; params: Record<string, unknown> } | { done: number })[] = [];
+    const connect = (): RpcConnector => (events) => {
+      const transport = fake.connect()({
+        line: (line) => { const message = JSON.parse(line) as { id?: number; method?: string }; if (typeof message.id === "number" && !message.method) log.push({ done: message.id }); events.line(line); },
+        exit: events.exit,
+      });
+      return { write: (line) => { const request = JSON.parse(line) as { id: number; method: string; params: Record<string, unknown> }; log.push({ sent: request.id, method: request.method, params: request.params }); transport.write(line); }, close: () => transport.close() };
+    };
+    const peak = () => { let open = 0; let most = 0; for (const entry of log) { open += "sent" in entry ? 1 : -1; most = Math.max(most, open); } return most; };
+    return { log, connect, peak };
+  }
+
+  it("lists the first screenful, then the rest, and previews one chat at a time", async () => {
+    const fake = new FakeImsg({ ...many(70), delays: { "messages.history": 2 } });
+    const { log, connect, peak } = watched(fake);
+    const session = createSession({ connect, journal: memoryJournal() });
+    let notifications = 0;
+    session.subscribe(() => { notifications += 1; });
+    try {
+      await session.start();
+      await eventually(() => [...session.getSnapshot().chats.values()].filter((chat) => chat.lastMessage).length === 70, 10_000);
+      await eventually(() => session.getSnapshot().chats.get(parseChatGuid(`any;-;${address(0)}`))?.service === "iMessage");
+      expect(fake.requests.filter((request) => request.method === "chats.list").map((request) => request.params.limit)).toEqual([60, 500]);
+      expect(peak()).toBe(1);
+      // Only the top of the list has its service looked up; the rest keep their row's until opened.
+      expect(fake.requests.filter((request) => request.method === "message.send_status")).toHaveLength(40);
+      expect(session.getSnapshot().chats.get(parseChatGuid(`any;-;${address(69)}`))?.service).toBe("SMS");
+      // Seventy previews redraw the list a handful of times, not seventy.
+      expect(notifications).toBeLessThan(25);
+      expect(log.length).toBeGreaterThan(0);
+    } finally { await session.close(); }
+  });
+
+  it("sends nothing in the background while a conversation it is opening loads", async () => {
+    const fake = new FakeImsg({ ...many(70), delays: { "messages.history": 15 } });
+    const { log, connect } = watched(fake);
+    const session = createSession({ connect, journal: memoryJournal() });
+    const deep = parseChatGuid(`any;-;${address(65)}`);
+    try {
+      await session.start();
+      await eventually(() => [...session.getSnapshot().chats.values()].filter((chat) => chat.lastMessage).length >= 3);
+      await eventually(() => session.getSnapshot().chats.has(deep), 10_000);
+      session.act({ type: "open-chat", chatGuid: deep });
+      await eventually(() => session.getSnapshot().history.get(deep)?.kind === "ready", 10_000);
+      const opened = log.findIndex((entry) => "sent" in entry && entry.method === "messages.history" && entry.params.limit === 50);
+      const request = log[opened] as { sent: number };
+      const answered = log.findIndex((entry) => "done" in entry && entry.done === request.sent);
+      expect(opened).toBeGreaterThan(0);
+      expect(log.slice(opened + 1, answered).filter((entry) => "sent" in entry && entry.method !== "read")).toEqual([]);
+      expect(texts(session, deep).map((message) => message.body)).toEqual(["hello 65"]);
+    } finally { await session.close(); }
+  });
+});
+
 describe("attachment previews", () => {
   function previewSession(readAttachment: SessionOptions["readAttachment"]) {
     return createSession({ connect: () => new FakeImsg().connect(), journal: memoryJournal(), ...(readAttachment ? { readAttachment } : {}) });

@@ -20,8 +20,15 @@ type LocalSend = { chatGuid: ChatGuid; text: string; createdAt: number };
 
 const MAX_ACTIVE_IMAGE_LOADS = 2;
 const CHAT_LIMIT = 500;
+// imsg lists chats at about 5 ms each (2.3 s for 500), so the first screenful is asked for
+// alone and the rest follows in the background.
+const FIRST_CHATS = 60;
 const HISTORY_PAGE = 50;
-const PREVIEW_CONCURRENCY = 2;
+// The conversations at the top of the list, where it shows at startup, have their service
+// looked up; the rest keep their row's until opened or a message arrives.
+const SERVICE_LOOKUPS = 40;
+// Previews land a few dozen a second; applied together, they redraw the list a few times.
+const PREVIEW_FLUSH_MS = 250;
 const RESTART_DELAYS = [1_000, 2_000, 5_000, 15_000];
 const NOTICE_DURATIONS = { info: 5_000, error: 10_000 };
 // Background results (previews, services, contacts, streamed rows) wait this long for others,
@@ -79,6 +86,13 @@ export function createSession(options: SessionOptions): Session {
   const receiptChecks = new Set<Timer>();
   const readRequests = new Map<ChatGuid, number>();
   const previewed = new Set<ChatGuid>();
+  let previewBatch: { chatGuid: ChatGuid; message: Message }[] = [];
+  let previewContacts: Contact[] = [];
+  let previewTimer: Timer | undefined;
+  // imsg answers every request from one database, so background work waits while anything
+  // the user is waiting on (a conversation opening, a send) is in flight.
+  let foreground = 0;
+  const foregroundWaiters: (() => void)[] = [];
   // One service lookup per chat at a time; a newer message waits and replaces older waiters.
   const serviceLookups = new Map<ChatGuid, { at: number; next?: TextMessage }>();
   const ackedGuids = new Set<MessageGuid>();
@@ -106,6 +120,22 @@ export function createSession(options: SessionOptions): Session {
     effects.add(promise);
     void promise.finally(() => effects.delete(promise)).catch(() => undefined);
     return promise;
+  }
+
+  function foregroundWork<T>(work: Promise<T>): Promise<T> {
+    foreground += 1;
+    const done = () => {
+      foreground -= 1;
+      if (!foreground) for (const resume of foregroundWaiters.splice(0)) resume();
+    };
+    work.then(done, done);
+    return work;
+  }
+
+  // Waits for the foreground to be idle; false once this connection is gone.
+  async function gaveWay(active: ImsgClient): Promise<boolean> {
+    if (foreground) await new Promise<void>((resume) => foregroundWaiters.push(resume));
+    return client === active && !closed;
   }
 
   function persist(): void {
@@ -270,11 +300,11 @@ export function createSession(options: SessionOptions): Session {
         blocked = false;
         restartAttempt = 0;
         dispatch({ type: "connection", connection: "online" });
-        await loadChats(active);
-        void loadPreviews(active);
+        const listed = await loadChats(active, FIRST_CHATS);
         const loaded = [...state.history.entries()].filter(([, value]) => value.kind !== "unloaded").map(([guid]) => guid);
         for (const guid of loaded) void loadHistory(guid, "latest");
         if (status.bridgeReady) track(active.subscribeBridgeEvents()).catch(() => undefined);
+        void loadInBackground(active, listed).catch(() => undefined);
       } catch (error) {
         if (client !== active) return;
         failConnection(error);
@@ -335,40 +365,74 @@ export function createSession(options: SessionOptions): Session {
     return `Cannot read the Messages database${detail ? ` (${detail})` : ""}. ${fix}`;
   }
 
-  async function loadChats(active = client): Promise<void> {
+  // Returns how many chats came back.
+  async function loadChats(active = client, limit = CHAT_LIMIT): Promise<number> {
     if (!active) throw new BackendError("stopped", "imsg is not running");
-    const { chats, contacts } = await active.chats(CHAT_LIMIT);
-    if (client !== active) return;
+    const { chats, contacts } = await active.chats(limit);
+    if (client !== active) return 0;
     dispatch({ type: "chats-loaded", chats });
     learn(contacts);
     dispatch({ type: "chats-status", status: "ready" });
+    return chats.length;
   }
 
-  // chats.list has no message text, so fetch each chat's newest message for its preview.
-  async function loadPreviews(active: ImsgClient): Promise<void> {
+  // After the first screenful of the list: the rest of it, one long request best made before
+  // a conversation is picked; the previews and services of the chats at its top; then every
+  // other preview.
+  async function loadInBackground(active: ImsgClient, listed: number): Promise<void> {
+    if (listed >= FIRST_CHATS && await gaveWay(active)) await loadChats(active);
+    const top = await loadPreviews(active, SERVICE_LOOKUPS);
+    for (const { chatGuid, message } of top) {
+      if (!await gaveWay(active)) return;
+      await learnService(chatGuid, message, active);
+    }
+    await loadPreviews(active);
+  }
+
+  // chats.list has no message text, so each chat's newest message is fetched for its preview:
+  // newest chats first, one at a time, and never while the user is waiting on something.
+  async function loadPreviews(active: ImsgClient, limit = Number.POSITIVE_INFINITY): Promise<{ chatGuid: ChatGuid; message: Message }[]> {
     const queue = [...state.chats.values()]
       .filter((chat) => chat.rowId !== undefined && !previewed.has(chat.guid))
-      .sort((a, b) => chatActivity(b) - chatActivity(a));
-    const worker = async () => {
-      for (let chat = queue.shift(); chat && client === active && !closed; chat = queue.shift()) {
-        // Marked when started, so a restart leaves unfetched chats for the next pass.
-        if (previewed.has(chat.guid)) continue;
-        previewed.add(chat.guid);
-        try {
-          const page = await active.history(chat.rowId!, { limit: 1 });
-          const record = page.records[0];
-          const message = record?.messages[0];
-          if (!record || !message || client !== active) continue;
-          learn(record.contacts);
-          dispatch({ type: "chat-preview", chatGuid: chat.guid, message });
-          // Awaited, so startup lookups stay at PREVIEW_CONCURRENCY and never crowd out a chat being opened.
-          await learnService(chat.guid, message, active);
-        } catch {
-          previewed.delete(chat.guid);
-        }
+      .sort((a, b) => chatActivity(b) - chatActivity(a))
+      .slice(0, limit);
+    const fetched: { chatGuid: ChatGuid; message: Message }[] = [];
+    for (const chat of queue) {
+      if (!await gaveWay(active)) break;
+      // Marked when started, so a restart leaves unfetched chats for the next pass.
+      if (previewed.has(chat.guid)) continue;
+      previewed.add(chat.guid);
+      try {
+        const page = await active.history(chat.rowId!, { limit: 1 });
+        const record = page.records[0];
+        const message = record?.messages[0];
+        if (!record || !message || client !== active) continue;
+        queuePreview(chat.guid, message, record.contacts);
+        fetched.push({ chatGuid: chat.guid, message });
+      } catch {
+        previewed.delete(chat.guid);
       }
-    };
-    await Promise.all(Array.from({ length: PREVIEW_CONCURRENCY }, worker));
+    }
+    flushPreviews();
+    return fetched;
+  }
+
+  function queuePreview(chatGuid: ChatGuid, message: Message, contacts: Contact[]): void {
+    previewBatch.push({ chatGuid, message });
+    previewContacts.push(...contacts);
+    if (!previewTimer) previewTimer = setTimeout(flushPreviews, PREVIEW_FLUSH_MS);
+  }
+
+  function flushPreviews(): void {
+    if (previewTimer) clearTimeout(previewTimer);
+    previewTimer = undefined;
+    const previews = previewBatch;
+    const contacts = previewContacts;
+    previewBatch = [];
+    previewContacts = [];
+    if (closed) return;
+    if (contacts.length) learn(contacts);
+    if (previews.length) dispatch({ type: "chat-previews", previews });
   }
 
   function scheduleChatsReload(): void {
@@ -391,7 +455,7 @@ export function createSession(options: SessionOptions): Session {
     dispatch({ type: "history-loading", chatGuid, request, mode });
     const chat = state.chats.get(chatGuid);
     const active = client;
-    const operation = (async () => {
+    const operation = foregroundWork((async () => {
       if (!active) throw new BackendError("stopped", "imsg is not running. Press R to retry.");
       if (chat?.rowId === undefined) throw new BackendError("invalid", "This conversation is not in the Messages database yet.");
       return active.history(chat.rowId, { limit: HISTORY_PAGE, ...(before !== undefined ? { before } : {}) });
@@ -412,7 +476,7 @@ export function createSession(options: SessionOptions): Session {
         }
       })
       .catch((error) => dispatch({ type: "history-failed", chatGuid, request, message: errorText(error) }))
-      .finally(() => historyLoads.delete(chatGuid));
+      .finally(() => historyLoads.delete(chatGuid)));
     historyLoads.set(chatGuid, operation);
     track(operation).catch(() => undefined);
     return operation;
@@ -491,7 +555,7 @@ export function createSession(options: SessionOptions): Session {
       report(new Error(error));
       return;
     }
-    const promise = journal.flush().then(() => active.sendText({ chatGuid, text, ...(replyTo ? { replyTo } : {}) }))
+    const promise = journal.flush().then(() => foregroundWork(active.sendText({ chatGuid, text, ...(replyTo ? { replyTo } : {}) })))
       .then((result) => {
         if (result.guid) {
           ackedGuids.add(result.guid);
@@ -526,9 +590,9 @@ export function createSession(options: SessionOptions): Session {
       return;
     }
     dispatch({ type: "input", input: { ...input, busy: true, error: null } });
-    const operation = addresses.length === 1
+    const operation = foregroundWork(addresses.length === 1
       ? active.sendDirect({ to: addresses[0]!, text, service: intent.service })
-      : active.createChat({ addresses, text });
+      : active.createChat({ addresses, text }));
     const promise = operation
       .then(async (result) => {
         if (result.guid) ackedGuids.add(result.guid);
@@ -713,6 +777,12 @@ export function createSession(options: SessionOptions): Session {
     if (noticeTimer) clearTimeout(noticeTimer);
     if (notifyTimer) clearTimeout(notifyTimer);
     if (chatsReload) clearTimeout(chatsReload);
+    if (previewTimer) clearTimeout(previewTimer);
+    previewTimer = undefined;
+    previewBatch = [];
+    previewContacts = [];
+    // Background work waiting its turn sees the session closed and stops.
+    for (const resume of foregroundWaiters.splice(0)) resume();
     for (const timer of [...typingStarts.values(), ...typingStops.values(), ...incomingTyping.values(), ...receiptChecks]) clearTimeout(timer);
     typingStarts.clear();
     typingStops.clear();
