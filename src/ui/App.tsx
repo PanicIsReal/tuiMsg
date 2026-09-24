@@ -86,11 +86,11 @@ function AppContent({ session }: AppProps) {
                     onSubmit={() => session.act({ type: "send", chatGuid: selected.guid })}
                     onEscape={() => session.act({ type: "input", input: { kind: "transcript", chatGuid: selected.guid } })} />
                 </>
-              ) : state.connection === "no-access" && state.notice?.kind === "error" ? (
+              ) : state.connection === "no-access" && state.unavailable ? (
                 <Box flexGrow={1} justifyContent="center" alignItems="center" paddingX={2}>
                   <Box flexDirection="column" width={Math.min(64, laneWidth - 4)}>
                     <Text><Text bold color={colors.text}>Messages is not available</Text></Text>
-                    <Text><Text color={colors.secondary}>{state.notice.text}</Text></Text>
+                    <Text><Text color={colors.secondary}>{state.unavailable}</Text></Text>
                     <Text><Text color={colors.subtle}>Shift+R retries · q quits</Text></Text>
                   </Box>
                 </Box>
@@ -124,6 +124,9 @@ type RouteContext = {
 function routeKey(key: KeyEvent, context: RouteContext): void {
   const { state, session } = context;
   const input = state.input;
+  // A notice gives way to the key hints at the next key, if its time is not already up. The
+  // live state is checked, since a notice can land after the frame this key was read against.
+  if (session.getSnapshot().notice) session.act({ type: "notice", notice: null });
   if (key.ctrl && key.name === "c") {
     session.act({ type: "quit" });
     return;

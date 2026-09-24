@@ -23,6 +23,7 @@ const CHAT_LIMIT = 500;
 const HISTORY_PAGE = 50;
 const PREVIEW_CONCURRENCY = 2;
 const RESTART_DELAYS = [1_000, 2_000, 5_000, 15_000];
+const NOTICE_DURATIONS = { info: 5_000, error: 10_000 };
 
 export type SessionOptions = {
   // Starts one `imsg rpc` child; called again to restart it.
@@ -56,6 +57,7 @@ export function createSession(options: SessionOptions): Session {
   let subscription: number | undefined;
   let lastRowId: number | undefined;
   let restartTimer: Timer | undefined;
+  let noticeTimer: Timer | undefined;
   let restartAttempt = 0;
   let blocked = false;
   let closed = false;
@@ -112,8 +114,21 @@ export function createSession(options: SessionOptions): Session {
       for (const listener of listeners) listener();
       if (save && durableChange(event)) persist();
     }
+    if (state.notice !== previous.notice) expireNotice();
     if (event.type === "message-upserted") handleLiveMessage(event.message);
     if (event.type === "typing") expireIncomingTyping(event.chatGuid, event.display);
+  }
+
+  // A notice gives way to the key hints again after a while, an error after longer.
+  function expireNotice(): void {
+    if (noticeTimer) clearTimeout(noticeTimer);
+    noticeTimer = undefined;
+    const notice = state.notice;
+    if (!notice) return;
+    noticeTimer = setTimeout(() => {
+      noticeTimer = undefined;
+      if (state.notice === notice) dispatch({ type: "notice", notice: null }, false);
+    }, NOTICE_DURATIONS[notice.kind]);
   }
 
   function bridge(): boolean {
@@ -230,9 +245,7 @@ export function createSession(options: SessionOptions): Session {
         if (client !== active) return;
         dispatch({ type: "capabilities", capabilities: { bridge: status.bridgeReady } });
         if (!status.databaseReady) {
-          dispatch({ type: "connection", connection: "no-access" });
-          dispatch({ type: "chats-status", status: "error" });
-          report(new Error(accessHelp(status.databaseError)));
+          unavailable(accessHelp(status.databaseError));
           return;
         }
         // Subscribe before listing so nothing that arrives in between is missed.
@@ -255,11 +268,22 @@ export function createSession(options: SessionOptions): Session {
   }
 
   function failConnection(error: unknown): void {
-    const missing = error instanceof BackendError && (error.kind === "missing" || error.kind === "access");
-    dispatch({ type: "connection", connection: missing ? "no-access" : "offline" });
+    if (error instanceof BackendError && (error.kind === "missing" || error.kind === "access")) {
+      unavailable(error.kind === "access" ? accessHelp(error.message) : error.message);
+      return;
+    }
+    dispatch({ type: "connection", connection: "offline" });
     if (state.chatsStatus !== "ready") dispatch({ type: "chats-status", status: "error" });
-    report(error instanceof BackendError && error.kind === "access" ? new Error(accessHelp(error.message)) : error);
-    if (!missing) scheduleRestart();
+    report(error);
+    scheduleRestart();
+  }
+
+  // Shown where the conversation goes, for as long as it holds. With a conversation open
+  // over that spot, a notice points it out as well.
+  function unavailable(reason: string): void {
+    dispatch({ type: "connection", connection: "no-access", reason });
+    if (state.chatsStatus !== "ready") dispatch({ type: "chats-status", status: "error" });
+    if (state.selected) report(new Error(reason));
   }
 
   // The child exited underneath us. Pending requests were already rejected; restart it and
@@ -660,6 +684,7 @@ export function createSession(options: SessionOptions): Session {
     if (closed) return;
     closed = true;
     clearRestart();
+    if (noticeTimer) clearTimeout(noticeTimer);
     if (chatsReload) clearTimeout(chatsReload);
     for (const timer of [...typingStarts.values(), ...typingStops.values(), ...incomingTyping.values(), ...receiptChecks]) clearTimeout(timer);
     typingStarts.clear();

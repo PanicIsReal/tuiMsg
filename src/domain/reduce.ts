@@ -193,7 +193,7 @@ export function reduce(state: AppState, event: AppEvent, now = Date.now()): AppS
       return { ...state, readPending };
     }
     case "notice": return { ...state, notice: event.notice };
-    case "connection": return { ...state, connection: event.connection };
+    case "connection": return { ...state, connection: event.connection, unavailable: event.connection === "no-access" ? event.reason ?? null : null };
     case "capabilities": return { ...state, capabilities: event.capabilities };
     case "chats-loaded": {
       const chats = new Map(state.chats);

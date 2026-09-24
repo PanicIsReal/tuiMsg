@@ -69,6 +69,8 @@ export type AppState = {
   selected: ChatGuid | null; listCursor: ChatGuid | null; messageCursor: Map<ChatGuid, MessageGuid>;
   input: InputMode; search: string; typing: Map<ChatGuid, boolean>; notice: Notice | null;
   chatsStatus: "loading" | "ready" | "error";
+  // Why Messages cannot be read, while the connection is "no-access". Unlike a notice, it stays.
+  unavailable: string | null;
 };
 export type Intent =
   | { type: "input"; input: InputMode }
@@ -92,7 +94,7 @@ export type Intent =
   | { type: "notice"; notice: Notice | null }
   | { type: "quit" };
 export type AppEvent = Intent
-  | { type: "connection"; connection: Connection }
+  | { type: "connection"; connection: Connection; reason?: string }
   | { type: "capabilities"; capabilities: Capabilities }
   | { type: "chats-loaded"; chats: Chat[] }
   | { type: "chats-status"; status: AppState["chatsStatus"] }
@@ -127,7 +129,7 @@ export function emptyState(): AppState {
     chats: new Map(), messages: new Map(), contacts: new Map(), history: new Map(), drafts: new Map(),
     outbox: new Map(), readAt: new Map(), readPending: new Map(), selected: null, listCursor: null,
     messageCursor: new Map(), input: { kind: "list" }, search: "", typing: new Map(), notice: null,
-    chatsStatus: "loading",
+    chatsStatus: "loading", unavailable: null,
   };
 }
 // What an iMessage app message is, for ones that carry no text a terminal can show.

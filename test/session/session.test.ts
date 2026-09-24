@@ -1,7 +1,7 @@
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { parseChatGuid } from "../../src/domain/ids.ts";
 import type { Attachment, TextMessage } from "../../src/domain/model.ts";
 import { FakeImsg, type FakeImsgOptions } from "../../src/imsg/fake.ts";
@@ -181,10 +181,11 @@ describe("session over imsg", () => {
     try {
       await session.start();
       expect(session.getSnapshot().connection).toBe("no-access");
-      expect(session.getSnapshot().notice?.text).toMatch(/Allow full disk access for remote users/);
+      expect(session.getSnapshot().unavailable).toMatch(/Allow full disk access for remote users/);
       fake.databaseReady = true;
       session.act({ type: "refresh" });
       await eventually(() => session.getSnapshot().connection === "online" && session.getSnapshot().chats.size === 3);
+      expect(session.getSnapshot().unavailable).toBeNull();
     } finally { await session.close(); }
   });
 
@@ -418,5 +419,59 @@ describe("opening links", () => {
     expect(opened).toEqual([]);
     expect(session.getSnapshot().notice).toEqual({ kind: "error", text: "Only web links can be opened." });
     await session.close();
+  });
+});
+
+describe("notices", () => {
+  it("give the key hints back after five seconds, errors after ten", async () => {
+    vi.useFakeTimers();
+    const session = createSession({ connect: () => new FakeImsg().connect(), journal: memoryJournal() });
+    try {
+      session.act({ type: "notice", notice: { kind: "info", text: "Saved at /tmp/photo.png" } });
+      vi.advanceTimersByTime(4_999);
+      expect(session.getSnapshot().notice?.text).toBe("Saved at /tmp/photo.png");
+      vi.advanceTimersByTime(1);
+      expect(session.getSnapshot().notice).toBeNull();
+      session.act({ type: "notice", notice: { kind: "error", text: "Could not save" } });
+      vi.advanceTimersByTime(9_999);
+      expect(session.getSnapshot().notice?.text).toBe("Could not save");
+      vi.advanceTimersByTime(1);
+      expect(session.getSnapshot().notice).toBeNull();
+      // A newer notice gets its full time, whatever was left of the one before.
+      session.act({ type: "notice", notice: { kind: "info", text: "first" } });
+      vi.advanceTimersByTime(4_000);
+      session.act({ type: "notice", notice: { kind: "info", text: "second" } });
+      vi.advanceTimersByTime(4_000);
+      expect(session.getSnapshot().notice?.text).toBe("second");
+      vi.advanceTimersByTime(1_000);
+      expect(session.getSnapshot().notice).toBeNull();
+    } finally {
+      vi.useRealTimers();
+      await session.close();
+    }
+  });
+
+  it("come and go while the explanation of missing access stays", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { fake, session } = fakeSession({ databaseReady: false }, { ssh: true });
+    try {
+      // The fake imsg answers on timers, which waitFor advances between checks.
+      const started = session.start();
+      await vi.waitFor(() => expect(session.getSnapshot().connection).toBe("no-access"));
+      await started;
+      // With no conversation open, the explanation is on screen and needs no notice.
+      expect(session.getSnapshot().notice).toBeNull();
+      session.act({ type: "notice", notice: { kind: "info", text: "Light mode · Shift+L for dark" } });
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(session.getSnapshot().notice).toBeNull();
+      expect(session.getSnapshot().unavailable).toMatch(/Allow full disk access/);
+      fake.databaseReady = true;
+      session.act({ type: "refresh" });
+      await vi.waitFor(() => expect(session.getSnapshot().connection).toBe("online"));
+      expect(session.getSnapshot().unavailable).toBeNull();
+    } finally {
+      vi.useRealTimers();
+      await session.close();
+    }
   });
 });

@@ -87,6 +87,7 @@ function apply(intent: Intent): void {
     state = { ...state, drafts: new Map(state.drafts).set(intent.chatGuid, { ...current, replyTo: intent.messageGuid }) };
   } else if (intent.type === "search-set") state = { ...state, search: intent.text };
   else if (intent.type === "select-message") state = { ...state, messageCursor: new Map(state.messageCursor).set(intent.chatGuid, intent.messageGuid) };
+  else if (intent.type === "notice") state = { ...state, notice: intent.notice };
 }
 
 const app = render(<App session={session} />);
@@ -528,7 +529,27 @@ setup.mockInput.pressKey("L");
 await setup.flush();
 assert.equal(currentTheme(), "dark");
 assert.equal(state.drafts.get(secondChat)?.text, "L");
-state = { ...state, input: { kind: "search", returnTo: { kind: "transcript", chatGuid: secondChat } } };
+
+// A notice gives the key hints back at the next key, except the one explaining missing access.
+state = { ...state, input: { kind: "transcript", chatGuid: secondChat } };
+for (const listener of listeners) listener();
+session.act({ type: "notice", notice: { kind: "info", text: "Saved at /tmp/photo.png" } });
+await setup.flush();
+assert.match(setup.captureCharFrame(), /Saved at \/tmp\/photo\.png/);
+assert.doesNotMatch(setup.captureCharFrame(), /o open link/);
+setup.mockInput.pressKey("j");
+await setup.flush();
+assert.equal(state.notice, null);
+assert.match(setup.captureCharFrame(), /o open link/, "the key hints must come back at the next key");
+// Missing access is explained where the conversation goes, and stays there through keys.
+state = { ...state, connection: "no-access", unavailable: "Cannot read the Messages database.", selected: null, input: { kind: "list" } };
+for (const listener of listeners) listener();
+session.act({ type: "notice", notice: { kind: "info", text: "Light mode · Shift+L for dark" } });
+setup.mockInput.pressKey("j");
+await setup.flush();
+assert.equal(state.notice, null);
+assert.match(setup.captureCharFrame(), /Messages is not available[\s\S]*Cannot read the Messages database\./);
+state = { ...state, connection: "online", unavailable: null, selected: secondChat, input: { kind: "search", returnTo: { kind: "transcript", chatGuid: secondChat } } };
 for (const listener of listeners) listener();
 
 setup.resize(50, 16);
