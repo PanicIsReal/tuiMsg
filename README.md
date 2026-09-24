@@ -154,7 +154,7 @@ The log records:
 - **Terminal writes** that hold the program for over 20 ms, as a large write can while the SSH link catches up.
 - **Event-loop stalls** over 100 ms, memory each minute, and a summary with medians, 95th percentiles, and the slowest keys.
 
-It holds timings, sizes, and counts only. It never records message text, names, phone numbers, or addresses. Keys typed into the composer, search, or new-conversation fields are logged only as `typing`. Notices are logged by kind, not text. If the app crashes, the error message is included with the home directory, addresses, and numbers removed. The log shows the machine's CPU, the OS version, the terminal's `TERM`, `TERM_PROGRAM`, and `COLORTERM` settings, and the git commit being run. Read it before sharing.
+It holds timings, sizes, and counts only. It never records message text, names, phone numbers, or addresses. Keys typed into the composer, search, or new-conversation fields are logged only as `typing`. Elsewhere, only keys that are commands are named; any other key is logged as `other`, so a message typed before the composer was open stays out. Notices are logged by kind, not text. If the app crashes, the error message is included with the home directory, addresses, and numbers removed. The log shows the machine's CPU, the OS version, the terminal's `TERM`, `TERM_PROGRAM`, and `COLORTERM` settings, and the git commit being run. Read it before sharing.
 
 ## Development and verification
 

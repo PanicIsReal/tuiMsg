@@ -7,20 +7,24 @@ import { parseArgs } from "../src/config.ts";
 
 describe("naming keys for the log", () => {
   it("names commands, and only says typing in a text field", () => {
-    expect(keyNames("j", false)).toEqual(["j"]);
-    expect(keyNames("\x1b[A\x1b[B\r\t\x7f\x1b", false)).toEqual(["up", "down", "enter", "tab", "backspace", "esc"]);
-    expect(keyNames("\x1b[5~\x1b[24~\x1bOP\x1b[1;5C", false)).toEqual(["page up", "f12", "f1", "right"]);
-    expect(keyNames("\x01\n", false)).toEqual(["ctrl+a", "ctrl+j"]);
-    expect(keyNames("hi there", true)).toEqual(["typing"]);
+    expect(keyNames("j", "list")).toEqual(["j"]);
+    expect(keyNames("\x1b[A\x1b[B\r\t\x7f\x1b", "list")).toEqual(["up", "down", "enter", "tab", "backspace", "esc"]);
+    expect(keyNames("\x1b[5~\x1b[24~\x1bOP\x1b[1;5C", "list")).toEqual(["page up", "f12", "f1", "right"]);
+    expect(keyNames("\x01\n", "list")).toEqual(["ctrl+a", "ctrl+j"]);
+    expect(keyNames("hi there", "composer")).toEqual(["typing"]);
+    // A message typed before the composer was open, a key at a time, shows only its commands.
+    expect(["R", "e", "l", "a", "p"].flatMap((key) => keyNames(key, "transcript"))).toEqual(["R", "other", "other", "a", "other"]);
+    expect(keyNames("3", "list")).toEqual(["other"]);
+    expect(keyNames("3", "tapback")).toEqual(["3"]);
     // Text typed as a field opens can arrive with the key that opened it.
-    expect(keyNames("ihello", false)).toEqual(["typing"]);
-    expect(keyNames("jjj", false)).toEqual(["j", "j", "j"]);
-    expect(keyNames("\x1bh", true)).toEqual(["alt+key"]);
-    expect(keyNames("\x1b[200~pasted secret\x1b[201~", true)).toEqual(["paste"]);
+    expect(keyNames("ihello", "transcript")).toEqual(["typing"]);
+    expect(keyNames("jjj", "list")).toEqual(["j", "j", "j"]);
+    expect(keyNames("\x1bh", "list")).toEqual(["alt+key"]);
+    expect(keyNames("\x1b[200~pasted secret\x1b[201~", "composer")).toEqual(["paste"]);
   });
 
   it("names the wheel and clicks, and leaves out releases and motion", () => {
-    expect(keyNames("\x1b[<65;10;5M\x1b[<64;10;5M\x1b[<0;3;4M\x1b[<0;3;4m\x1b[<35;3;4M", false)).toEqual(["wheel down", "wheel up", "click"]);
+    expect(keyNames("\x1b[<65;10;5M\x1b[<64;10;5M\x1b[<0;3;4M\x1b[<0;3;4m\x1b[<35;3;4M", "transcript")).toEqual(["wheel down", "wheel up", "click"]);
   });
 });
 

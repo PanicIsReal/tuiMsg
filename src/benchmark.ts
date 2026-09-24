@@ -86,7 +86,7 @@ export class Benchmark {
       this.reading = [];
       return;
     }
-    const names = keyNames(chunk, TEXT_FIELDS.has(mode));
+    const names = keyNames(chunk, mode);
     if (names.includes("f12")) this.mark();
     const label = summarize(names.filter((name) => name !== "f12"));
     if (!label) return;
@@ -366,7 +366,7 @@ export function describeEnvironment(version: string, imsg: string | undefined): 
   return [
     `tuiMsg benchmark · ${now.toISOString()} (local ${now.toString().slice(0, 24)})`,
     "Timings, sizes and counts only: no message text, names, numbers or addresses, and no",
-    "keys typed into a text field. Press F12 while running to mark a moment in this log.",
+    "typing: only keys that are commands are named. Press F12 to mark a moment in this log.",
     "",
     `tuimsg      ${version}`,
     `runtime     ${process.versions.bun ? `Bun ${process.versions.bun}` : `Node ${process.versions.node}`} · ${process.platform} ${process.arch} · kernel ${release()}`,
@@ -412,8 +412,15 @@ function run(command: string, args: string[]): Promise<string | undefined> {
   });
 }
 
+// The keys that are commands outside a text field. Anything else typed there, as a message
+// typed before the composer was open, is logged as "other", not spelled out.
+const COMMAND_KEYS = new Set([..."jkgrRtyvosamixnqL?/!"]);
+const REACTION_KEYS = new Set([..."jkx123456"]);
+
 // Names the keys in one read, without the text typed into a field.
-export function keyNames(chunk: string, field: boolean): string[] {
+export function keyNames(chunk: string, mode: InputMode["kind"]): string[] {
+  const field = TEXT_FIELDS.has(mode);
+  const commands = mode === "tapback" ? REACTION_KEYS : COMMAND_KEYS;
   const names: string[] = [];
   const pattern = /\x1b\[<(\d+);\d+;\d+([Mm])|\x1b\[200~[\s\S]*?(?:\x1b\[201~|$)|\x1b\[([\d;:?<=>]*)[ -/]*([@-~])|\x1bO([\s\S])|\x1b([\s\S])|\x1b|([\x00-\x1f\x7f])|([^\x00-\x1f\x7f\x1b]+)/g;
   for (const match of chunk.matchAll(pattern)) {
@@ -425,7 +432,7 @@ export function keyNames(chunk: string, field: boolean): string[] {
     } else if (whole.startsWith("\x1b[200~")) names.push("paste");
     else if (final !== undefined) names.push(final === "~" ? TILDE[(parameters ?? "").split(";")[0]!] ?? "sequence" : CSI[final] ?? "sequence");
     else if (ss3 !== undefined) names.push(SS3[ss3] ?? "sequence");
-    else if (alt !== undefined) names.push(field || !/^[!-~]$/.test(alt) ? "alt+key" : `alt+${alt}`);
+    else if (alt !== undefined) names.push("alt+key");
     else if (whole === "\x1b") names.push("esc");
     else if (control !== undefined) names.push(CONTROL[control] ?? `ctrl+${String.fromCharCode(control.charCodeAt(0) + 96)}`);
     else if (text !== undefined) {
@@ -434,7 +441,7 @@ export function keyNames(chunk: string, field: boolean): string[] {
       // a held key's repeats are.
       const characters = [...text];
       if (field || characters.some((character) => character !== characters[0])) names.push("typing");
-      else for (const character of characters) names.push(character === " " ? "space" : /^[!-~]$/.test(character) ? character : "text");
+      else for (const character of characters) names.push(commands.has(character) ? character : "other");
     }
   }
   return names;
