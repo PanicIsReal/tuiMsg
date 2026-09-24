@@ -3,36 +3,43 @@ import type { ChatGuid, HandleAddress, MessageGuid } from "./ids.ts";
 export type Service = "iMessage" | "SMS";
 export type ChatKind = "dm" | "group";
 export type MessageStatus = "pending" | "sent" | "delivered" | "read" | "failed" | "uncertain";
-export type Connection = "offline" | "connecting" | "online" | "auth-failed";
+export type Connection = "offline" | "connecting" | "online" | "no-access";
 export type Reaction = "love" | "like" | "dislike" | "laugh" | "emphasize" | "question";
+// Received tapbacks can also be any emoji (iOS 18+); only the six standard ones can be sent.
+export type TapbackKind = Reaction | "emoji";
 export type Contact = { displayName: string; phones: HandleAddress[]; emails: HandleAddress[] };
 export type Handle = { address: HandleAddress; service: Service; contact?: Contact };
-export type TapbackChip = { reaction: Reaction; count: number; fromMe: boolean };
-export type Attachment = { guid: string; name: string; mime: string; bytes: number };
+export type TapbackChip = { reaction: TapbackKind; emoji?: string; count: number; fromMe: boolean };
+export type Attachment = { guid: string; name: string; mime: string; bytes: number; path?: string; missing?: boolean };
 export type MessagePreview = { body: string; sentAt: number; isFromMe: boolean; guid?: MessageGuid };
 export type Chat = {
   guid: ChatGuid; kind: ChatKind; service: Service; title: string; participants: Handle[];
   lastMessage?: MessagePreview; unreadCount: number; muted: boolean; provisional?: boolean;
+  rowId?: number; lastActivityAt?: number;
+  // Set when `service` was read from the message sent at this time rather than from the
+  // chat row, whose stored service goes stale on merged (any;) conversations.
+  serviceAt?: number;
 };
 type MessageBase = { guid: MessageGuid; chatGuid: ChatGuid; sentAt: number };
 export type TextMessage = MessageBase & {
   kind: "text"; from: Handle; isFromMe: boolean; body: string; attachments: Attachment[];
   deliveredAt?: number; readAt?: number; editedAt?: number; replyTo?: MessageGuid;
   status: MessageStatus; tempGuid?: MessageGuid;
+  // Messages' balloon_bundle_id: set for link previews and iMessage app messages.
+  balloon?: string;
 };
 export type TapbackMessage = MessageBase & {
-  kind: "tapback"; target: MessageGuid; reaction: Reaction; from: Handle; isFromMe: boolean; removed: boolean;
+  kind: "tapback"; target: MessageGuid; reaction: TapbackKind; emoji?: string; from: Handle; isFromMe: boolean; removed: boolean;
 };
 export type GroupEventMessage = MessageBase & {
   kind: "group-event"; action: "add" | "remove" | "leave" | "rename"; actor: Handle; detail: string;
 };
 export type UnsentMessage = MessageBase & { kind: "unsent" };
 export type Message = TextMessage | TapbackMessage | GroupEventMessage | UnsentMessage;
-export type Capabilities = { privateApi: boolean; helperConnected: boolean };
+export type Capabilities = { bridge: boolean };
 export type Draft = { text: string; replyTo: MessageGuid | null };
-export type HistoryCursor = { before: number; offset: number };
-export type MessagePage = { messages: Message[]; next: HistoryCursor | null; total: number };
-export type ChatPage = { chats: Chat[]; nextOffset: number | null };
+export type HistoryCursor = { before: number };
+export type MessagePage = { messages: Message[]; next: HistoryCursor | null };
 export type PageMode = "latest" | "older";
 export type HistoryState =
   | { kind: "unloaded" }
@@ -62,6 +69,8 @@ export type AppState = {
   selected: ChatGuid | null; listCursor: ChatGuid | null; messageCursor: Map<ChatGuid, MessageGuid>;
   input: InputMode; search: string; typing: Map<ChatGuid, boolean>; notice: Notice | null;
   chatsStatus: "loading" | "ready" | "error";
+  // Why Messages cannot be read, while the connection is "no-access". Unlike a notice, it stays.
+  unavailable: string | null;
 };
 export type Intent =
   | { type: "input"; input: InputMode }
@@ -81,13 +90,16 @@ export type Intent =
   | { type: "create-chat"; addresses: string; text: string; service: Service }
   | { type: "attachment"; attachment: Attachment; action: "open" | "save" }
   | { type: "copy"; text: string }
+  | { type: "open-link"; url: string }
   | { type: "notice"; notice: Notice | null }
   | { type: "quit" };
 export type AppEvent = Intent
-  | { type: "connection"; connection: Connection }
+  | { type: "connection"; connection: Connection; reason?: string }
   | { type: "capabilities"; capabilities: Capabilities }
   | { type: "chats-loaded"; chats: Chat[] }
   | { type: "chats-status"; status: AppState["chatsStatus"] }
+  | { type: "chat-previews"; previews: { chatGuid: ChatGuid; message: Message }[] }
+  | { type: "chat-service"; chatGuid: ChatGuid; service: Service; at: number }
   | { type: "contacts-loaded"; contacts: Contact[] }
   | { type: "history-loading"; chatGuid: ChatGuid; request: number; mode: PageMode }
   | { type: "history-loaded"; chatGuid: ChatGuid; request: number; page: MessagePage }
@@ -113,16 +125,28 @@ export type Session = {
 };
 export function emptyState(): AppState {
   return {
-    connection: "connecting", capabilities: { privateApi: false, helperConnected: false },
+    connection: "connecting", capabilities: { bridge: false },
     chats: new Map(), messages: new Map(), contacts: new Map(), history: new Map(), drafts: new Map(),
     outbox: new Map(), readAt: new Map(), readPending: new Map(), selected: null, listCursor: null,
     messageCursor: new Map(), input: { kind: "list" }, search: "", typing: new Map(), notice: null,
-    chatsStatus: "loading",
+    chatsStatus: "loading", unavailable: null,
   };
+}
+// What an iMessage app message is, for ones that carry no text a terminal can show.
+// Link previews (URLBalloonProvider) have their URL as text, so they need no label.
+export function appMessageLabel(balloon: string | undefined): string | undefined {
+  if (!balloon || balloon === "com.apple.messages.URLBalloonProvider") return undefined;
+  if (balloon.includes("Handwriting")) return "Handwritten message";
+  if (balloon.includes("DigitalTouch")) return "Digital Touch message";
+  if (balloon.includes("PeerPayment")) return "Apple Cash";
+  if (balloon.includes("FindMy")) return "Location from Find My";
+  if (balloon.includes("SafetyMonitor")) return "Check In";
+  return "Message from an iMessage app";
 }
 export function previewBody(message: Message): string {
   switch (message.kind) {
-    case "text": return message.body || message.attachments.map(a => `[${a.name}]`).join(" ");
+    // U+FFFC is Messages' placeholder for where an attachment sits in the text.
+    case "text": return message.body.replace(/\uFFFC/g, "").trim() || message.attachments.map(a => `[${a.name}]`).join(" ") || appMessageLabel(message.balloon) || "";
     case "tapback": return message.reaction;
     case "group-event": return message.detail;
     case "unsent": return "Unsent a message";
@@ -131,6 +155,18 @@ export function previewBody(message: Message): string {
 export function draftFor(state: AppState, chatGuid: ChatGuid): Draft {
   return state.drafts.get(chatGuid) ?? { text: "", replyTo: null };
 }
-export function privateApiAvailable(capabilities: Capabilities): boolean {
-  return capabilities.privateApi && capabilities.helperConnected;
+export function bridgeAvailable(capabilities: Capabilities): boolean {
+  return capabilities.bridge;
+}
+export function chatActivity(chat: Chat): number {
+  return Math.max(chat.lastMessage?.sentAt ?? 0, chat.lastActivityAt ?? 0);
+}
+// Only a service-specific chat GUID settles the service; merged conversations (any;-;…)
+// and anything unrecognised can carry either, message by message.
+export function serviceOfChatGuid(guid: string): Service | undefined {
+  const separator = guid.indexOf(";");
+  const prefix = separator > 0 ? guid.slice(0, separator).toLowerCase() : "";
+  if (prefix === "imessage") return "iMessage";
+  if (prefix === "sms" || prefix === "rcs") return "SMS";
+  return undefined;
 }

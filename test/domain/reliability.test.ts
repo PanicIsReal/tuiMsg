@@ -77,6 +77,18 @@ describe("message reliability", () => {
     expect(moved.messageCursor.get(chatGuid)).toBe(guid);
   });
 
+  it("moves the selection to a message as it is sent, and keeps it there once acknowledged", () => {
+    const loaded = reduce(initialState(), { type: "messages-loaded", chatGuid, messages: [message] });
+    const reading = reduce(loaded, { type: "select-message", chatGuid, messageGuid: guid });
+    const sending = reduce(reading, { type: "send-requested", chatGuid, text: "On my way", tempGuid });
+    // No stored cursor means the newest message, the pending one, is selected and scrolled to.
+    expect(sending.messageCursor.has(chatGuid)).toBe(false);
+    const picked = reduce(sending, { type: "select-message", chatGuid, messageGuid: tempGuid });
+    const server = parseMessageGuid("server-reply");
+    const acknowledged = reduce(picked, { type: "send-acked", tempGuid, guid: server });
+    expect(acknowledged.messageCursor.get(chatGuid)).toBe(server);
+  });
+
   it("retains the message preview when a reaction arrives", () => {
     const received = reduce(initialState(), { type: "message-upserted", message });
     const reacted = reduce(received, { type: "message-upserted", message: {
@@ -96,9 +108,9 @@ describe("message reliability", () => {
 
   it("keeps fully loaded history complete after a newest-page refresh", () => {
     let state = reduce(initialState(), { type: "history-loading", chatGuid, request: 1, mode: "latest" });
-    state = reduce(state, { type: "history-loaded", chatGuid, request: 1, page: { messages: [message], next: null, total: 1 } });
+    state = reduce(state, { type: "history-loaded", chatGuid, request: 1, page: { messages: [message], next: null } });
     state = reduce(state, { type: "history-loading", chatGuid, request: 2, mode: "latest" });
-    state = reduce(state, { type: "history-loaded", chatGuid, request: 2, page: { messages: [message], next: { before: 1000, offset: 1 }, total: 2 } });
+    state = reduce(state, { type: "history-loaded", chatGuid, request: 2, page: { messages: [message], next: { before: 1000 } } });
     expect(state.history.get(chatGuid)).toEqual({ kind: "ready", next: null });
   });
 

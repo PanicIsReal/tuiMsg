@@ -16,7 +16,7 @@ export function SearchModal(props: { value: string; onChange: (value: string) =>
 
 export function NewChatModal(props: {
   mode: Extract<InputMode, { kind: "new-chat" }>;
-  privateApi: boolean;
+  bridge: boolean;
   onChange: (mode: Extract<InputMode, { kind: "new-chat" }>) => void;
   onSubmit: () => void;
   onCancel: () => void;
@@ -33,11 +33,11 @@ export function NewChatModal(props: {
       <TextInput focused={props.mode.field === "text" && !props.mode.busy} value={props.mode.text} placeholder="Write the first message"
         onChange={(text) => set({ text })} onSubmit={props.onSubmit} multiline rows={compact ? 1 : 2} />
       <Box flexDirection="row">
-        <Text><Text color={props.mode.service === "iMessage" ? colors.outgoingIMessage : colors.secondary}> iMessage </Text></Text>
-        <Text><Text color={props.mode.service === "SMS" ? colors.outgoingSms : colors.secondary}> SMS </Text></Text>
+        <Text><Text color={props.mode.service === "iMessage" ? colors.accent : colors.subtle}>{props.mode.service === "iMessage" ? "● " : "○ "}iMessage   </Text></Text>
+        <Text><Text color={props.mode.service === "SMS" ? colors.sms : colors.subtle}>{props.mode.service === "SMS" ? "● " : "○ "}SMS</Text></Text>
       </Box>
       {props.mode.error ? <Text><Text color={colors.failed}>{props.mode.error}</Text></Text> : null}
-      {!props.privateApi && !compact ? <Text><Text color={colors.warning}>Group creation may require the private API.</Text></Text> : null}
+      {!props.bridge && !compact ? <Text><Text color={colors.warning}>Group conversations need the imsg bridge.</Text></Text> : null}
       <Text><Text color={colors.secondary}>{props.mode.busy ? "Creating…" : compact ? "Tab field · Ctrl+S send" : "Tab field · Ctrl+S send · Ctrl+T service"}</Text></Text>
       <Text><Text color={colors.secondary}>{compact ? "Ctrl+T service · Esc cancel" : "Esc cancel"}</Text></Text>
     </Modal>
@@ -50,7 +50,7 @@ export function ReactionModal(props: { choice: number }) {
     <Modal width={48}>
       <Text><Text bold color={colors.text}>React to message</Text></Text>
       <Box flexDirection="row" flexWrap="wrap">{reactions.map(([reaction, glyph], index) => <Text key={reaction}><Text color={index === props.choice ? colors.accent : colors.text}> {index + 1} {glyph} </Text></Text>)}</Box>
-      <Text><Text color={colors.secondary}>←/→ choose · Enter add · x remove · Esc cancel</Text></Text>
+      <Text><Text color={colors.subtle}>←/→ choose · ↵ add · x remove · esc</Text></Text>
     </Modal>
   );
 }
@@ -84,7 +84,7 @@ function Modal(props: { width: number; children: React.ReactNode }) {
   const { rows } = useWindowSize();
   return (
     <Box width={props.width} maxWidth="92%" maxHeight="100%" borderStyle="round" borderBackgroundColor={colors.canvas}
-      borderColor={colors.accent} backgroundColor={colors.panelRaised} paddingX={1} paddingY={rows < 18 ? 0 : 1} flexDirection="column" overflow="hidden">
+      borderColor={colors.faint} backgroundColor={colors.raised} paddingX={2} paddingY={rows < 18 ? 0 : 1} flexDirection="column" overflow="hidden">
       {Children.map(props.children, child => child ? <Box flexDirection="column" flexShrink={0}>{child}</Box> : null)}
     </Box>
   );

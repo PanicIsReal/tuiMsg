@@ -1,10 +1,14 @@
 import { useMouse } from "./mouse.tsx";
-import { Box, Text, type DOMElement } from "ink";
+import { Box, Text, Transform, type DOMElement } from "ink";
 import { ImagePreview } from "./ImagePreview.tsx";
 import { isImageAttachment } from "../attachments.ts";
 import { memo, useRef } from "react";
-import type { Attachment, Message, TapbackChip } from "../domain/model.ts";
-import { colors, reactionGlyph } from "./theme.ts";
+import { appMessageLabel, type Attachment, type Message, type TapbackChip } from "../domain/model.ts";
+import { bar, colors, reactionGlyph, useTheme } from "./theme.ts";
+import { cleanText } from "../domain/text.ts";
+import type { MessageGuid } from "../domain/ids.ts";
+import { formatClock } from "../domain/dates.ts";
+import { hyperlink, linkParts } from "../domain/links.ts";
 
 export type BubbleProps = {
   message: Exclude<Message, { kind: "tapback" }>;
@@ -12,24 +16,33 @@ export type BubbleProps = {
   showReceipt: boolean;
   grouped: boolean;
   selected: boolean;
+  // A group member's own color for their name and bar.
+  tint?: string | undefined;
   width: number;
   loadAttachment?: ((attachment: Attachment) => Promise<Uint8Array>) | undefined;
-  onSelect: () => void;
+  // Stable across renders, so the memo holds: each bubble passes its own message.
+  onSelect: (messageGuid: MessageGuid) => void;
   onViewAttachment?: ((attachment: Attachment) => void) | undefined;
 };
 
+// Every message hangs off a bar down its left side: blue for yours, gray for theirs, so a run
+// of messages from one person reads as one block. The selected message's bar is solid.
+const MESSAGE_BAR = bar("▎");
+const SELECTED_BAR = bar("▌");
+
 export const Bubble = memo(function Bubble(props: BubbleProps) {
+  useTheme();
   const element = useRef<DOMElement>(null);
   useMouse(element, event => {
     if (event.kind !== "click" || event.button !== "left") return false;
-    props.onSelect();
+    props.onSelect(props.message.guid);
     return true;
   });
   const { message } = props;
   if (message.kind === "group-event" || message.kind === "unsent") {
     return (
-      <Box ref={element} width="100%" paddingLeft={2} marginTop={1}>
-        <Text><Text color={colors.secondary}>{props.selected ? "› " : ""}{message.kind === "unsent" ? "Unsent a message" : message.detail}</Text></Text>
+      <Box ref={element} width="100%" marginTop={1} justifyContent="center">
+        <Text wrap="truncate-end" color={props.selected ? colors.text : colors.subtle}>{message.kind === "unsent" ? "Unsent a message" : message.detail}</Text>
       </Box>
     );
   }
@@ -37,41 +50,60 @@ export const Bubble = memo(function Bubble(props: BubbleProps) {
   const mine = message.isFromMe;
   const body = normalizeBody(message.body);
   const imageAttachments = message.attachments.filter(isImageAttachment);
-  const contentWidth = Math.max(1, props.width - 4);
-  return <Box ref={element} width="100%" marginTop={props.grouped ? 0 : 1} flexDirection="row" flexShrink={0}>
-    <Box width={2} flexShrink={0}><Text color={props.selected ? colors.focus : colors.subtle}>{props.selected ? "›" : " "}</Text></Box>
-    <Box width={contentWidth} flexDirection="column" flexShrink={0}>
+  const contentWidth = Math.max(1, props.width - 2);
+  const sender = mine ? "You" : message.from.contact?.displayName ?? message.from.address;
+  const receipt = props.showReceipt || message.status === "pending" || message.status === "failed" || message.status === "uncertain" ? receiptLabel(message) : "";
+  const app = appMessageLabel(message.balloon);
+  return <Box ref={element} width="100%" marginTop={props.grouped ? 0 : 1} flexDirection="column" flexShrink={0}>
+    <Box borderStyle={props.selected ? SELECTED_BAR : MESSAGE_BAR} borderTop={false} borderRight={false} borderBottom={false}
+      borderLeftColor={props.selected ? colors.text : mine ? colors.accent : props.tint ?? colors.faint} borderBackgroundColor={colors.canvas} paddingLeft={1} flexDirection="column" flexShrink={0}>
       {!props.grouped ? <Box height={1} flexShrink={0}>
-        <Text wrap="truncate-end"><Text bold={!mine} color={mine ? colors.secondary : colors.text}>{mine ? "You" : message.from.contact?.displayName ?? message.from.address}</Text><Text color={colors.subtle}>  {formatMessageTime(message.sentAt)}{message.from.service === "SMS" ? " · SMS" : ""}</Text></Text>
+        <Text wrap="truncate-end"><Text bold color={mine ? colors.accent : props.tint ?? colors.text}>{sender}</Text><Text color={colors.subtle}>  {formatClock(message.sentAt)}</Text>{message.from.service === "SMS" ? <Text color={colors.sms}>  SMS</Text> : null}</Text>
       </Box> : null}
-      {body ? <Text color={colors.text}>{body}</Text> : null}
-      {props.loadAttachment ? imageAttachments.map(attachment => <ImagePreview key={attachment.guid} attachment={attachment} loadAttachment={props.loadAttachment!} width={Math.min(48, contentWidth)} height={props.width < 60 ? 6 : 10} delayMs={150} />) : null}
-      {message.attachments.map(attachment => <AttachmentLink key={attachment.guid} label={`${isImageAttachment(attachment) ? "↗" : "↓"} ${attachment.name}  ${formatBytes(attachment.bytes)}`} onOpen={() => props.onViewAttachment?.(attachment)} />)}
-      {!body && !message.attachments.length ? <Text color={colors.subtle}>Empty message</Text> : null}
-      {props.chips.length ? <Text color={colors.secondary}>{props.chips.map(chip => `${reactionGlyph[chip.reaction]}${chip.count > 1 ? ` ×${chip.count}` : ""}`).join("  ")}</Text> : null}
-      {props.showReceipt || message.status === "pending" || message.status === "failed" || message.status === "uncertain" ? <Receipt message={message} /> : null}
+      <Box flexDirection="row" flexShrink={0}>
+        <Box flexDirection="column" flexGrow={1} flexShrink={1}>
+          {body ? <Body text={body} /> : null}
+          {props.loadAttachment ? imageAttachments.map(attachment => <ImagePreview key={attachment.guid} attachment={attachment} loadAttachment={props.loadAttachment!} width={Math.min(48, contentWidth)} height={props.width < 60 ? 6 : 10} delayMs={150} />) : null}
+          {message.attachments.map(attachment => <AttachmentLink key={attachment.guid} image={isImageAttachment(attachment)} name={attachment.name} size={formatBytes(attachment.bytes)} onOpen={() => props.onViewAttachment?.(attachment)} />)}
+          {!body && !message.attachments.length ? <Text color={colors.subtle}>{app ? `${app} · shown only in Messages` : "Empty message"}</Text> : null}
+        </Box>
+        {/* Reactions hang off the message's top right, as a tapback does in Messages. */}
+        {props.chips.length ? <Box flexShrink={0} marginLeft={2}><Text>{props.chips.map((chip, index) => <Text key={`${chip.reaction}${chip.emoji ?? ""}`} color={chip.fromMe ? colors.accent : colors.secondary}>{index ? "  " : ""}{chip.reaction === "emoji" ? chip.emoji ?? "?" : reactionGlyph[chip.reaction]}{chip.count > 1 ? ` ${chip.count}` : ""}</Text>)}</Text></Box> : null}
+      </Box>
     </Box>
+    {receipt ? <Box paddingLeft={2} flexShrink={0}><Text wrap="truncate-end" italic={message.status === "pending"} color={message.status === "failed" || message.status === "uncertain" ? colors.warning : colors.subtle}>{receipt}</Text></Box> : null}
   </Box>;
 });
 
-function Receipt(props: { message: Extract<Message, { kind: "text" }> }) {
-  const { message } = props;
-  const label = receiptLabel(message);
-  if (!label) return null;
-  return <Text><Text color={message.status === "failed" || message.status === "uncertain" ? colors.warning : colors.subtle}>{label}</Text></Text>;
+// Ink wraps with whitespace kept, so a word that ends exactly at the edge pushes the space
+// after it to the start of the next line. Only wrapped lines lose it; each typed line is
+// its own Text, so indentation after a real newline stays.
+const dropWrapSpace = (line: string, index: number) => index === 0 ? line : line.replace(/^((?:\x1b\[[\d;]*m)*) /, "$1");
+
+// Links stand out from the words around them, as they do in Messages.
+function Body(props: { text: string }) {
+  return <Box flexDirection="column">
+    {props.text.split("\n").map((line, row) => <Transform key={row} transform={dropWrapSpace}>
+      <Text color={colors.text}>{line ? linkParts(line).map((part, index) => part.url ? <Text key={index} color={colors.accent} underline>{hyperlink(part.url, part.text)}</Text> : part.text) : " "}</Text>
+    </Transform>)}
+  </Box>;
 }
 
+// Every state has a label, so the line under the newest message stays put from Sending to
+// Read and the conversation does not jump a row while the receipt is on its way.
 function receiptLabel(message: Extract<Message, { kind: "text" }>): string {
-  if (message.status === "pending") return "Sending";
-  if (message.status === "failed") return "Not delivered  ·  ! retry";
-  if (message.status === "uncertain") return "Delivery uncertain  ·  ! retry";
-  if (message.status === "read" && message.readAt) return `Read ${formatMessageTime(message.readAt)}`;
+  if (message.status === "pending") return "Sending…";
+  if (message.status === "failed") return "Not delivered · ! to retry";
+  if (message.status === "uncertain") return "Delivery uncertain · ! to retry";
+  if (message.status === "read") return message.readAt ? `Read ${formatClock(message.readAt)}` : "Read";
   if (message.status === "delivered") return "Delivered";
-  return "";
+  // Taken by imsg, not yet delivered; SMS often reports nothing more.
+  return "Sent";
 }
 
 function normalizeBody(body: string): string {
-  const lines = body.split("\n").flatMap((line) => {
+  // Received text is cleaned when parsed; a pending bubble shows the local draft as typed.
+  const lines = cleanText(body).split("\n").flatMap((line) => {
     const normalized = line.replace(/\uFFFC/g, "");
     return normalized.trim().length === 0 && line.includes("\uFFFC") ? [] : [normalized];
   });
@@ -80,9 +112,6 @@ function normalizeBody(body: string): string {
   return lines.join("\n");
 }
 
-function formatMessageTime(ms: number): string {
-  return new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
-}
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -90,12 +119,12 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function AttachmentLink(props: { label: string; onOpen: () => void }) {
+function AttachmentLink(props: { image: boolean; name: string; size: string; onOpen: () => void }) {
   const element = useRef<DOMElement>(null);
   useMouse(element, event => {
     if (event.kind !== "click" || event.button !== "left") return false;
     props.onOpen();
     return true;
   });
-  return <Box ref={element}><Text color={colors.accent}>{props.label}</Text></Box>;
+  return <Box ref={element}><Text wrap="truncate-end"><Text color={colors.accent}>{props.image ? "↗" : "↓"} </Text><Text color={colors.secondary}>{props.name}</Text><Text color={colors.subtle}>  {props.size}</Text></Text></Box>;
 }

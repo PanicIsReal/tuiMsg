@@ -1,5 +1,6 @@
 import type { ChatGuid } from "./ids.ts";
-import type { Chat, Message, Reaction, TapbackChip, TextMessage } from "./model.ts";
+import { formatLongWeekday, formatMonthDayYear, formatWeekdayMonthDay } from "./dates.ts";
+import { chatActivity, type Chat, type Message, type Reaction, type TapbackChip, type TextMessage } from "./model.ts";
 
 export type ThreadRow =
   | { kind: "day"; key: string; label: string }
@@ -12,27 +13,32 @@ function dayKey(ms: number): string {
   return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
 }
 
-function dayLabel(ms: number): string {
-  return new Date(ms).toLocaleDateString(undefined, {
-    weekday: "long",
-    month: "short",
-    day: "numeric",
-  });
+// Relative for the last week, like Messages: Today, Yesterday, Monday, then Mon, Sep 22.
+export function dayLabel(ms: number, now = Date.now()): string {
+  const day = new Date(ms);
+  const start = (value: Date) => new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime();
+  const days = Math.round((start(new Date(now)) - start(day)) / 86_400_000);
+  if (days === 0) return "Today";
+  if (days === 1) return "Yesterday";
+  if (days > 1 && days < 7) return formatLongWeekday(ms);
+  if (day.getFullYear() === new Date(now).getFullYear()) return formatWeekdayMonthDay(ms);
+  return formatMonthDayYear(ms);
 }
 
 export function foldTapbacks(messages: Message[]): ThreadRow[] {
-  const memberships = new Map<string, Map<Reaction, Map<string, boolean>>>();
+  const memberships = new Map<string, Map<string, { chip: Omit<TapbackChip, "count" | "fromMe">; senders: Map<string, boolean> }>>();
   for (const message of messages) {
     if (message.kind !== "tapback") continue;
     const bucket = memberships.get(message.target) ?? new Map();
-    const senders = bucket.get(message.reaction) ?? new Map();
-    if (message.removed) {
-      senders.delete(message.from.address);
-    } else {
-      senders.set(message.from.address, message.isFromMe);
-    }
-    if (senders.size === 0) bucket.delete(message.reaction);
-    else bucket.set(message.reaction, senders);
+    const key = message.reaction === "emoji" ? `emoji:${message.emoji ?? ""}` : message.reaction;
+    const entry = bucket.get(key) ?? { chip: message.reaction === "emoji" ? { reaction: "emoji", emoji: message.emoji ?? "?" } : { reaction: message.reaction }, senders: new Map() };
+    // In a direct chat, Messages records the other person as the handle of your own
+    // outgoing rows, so the sender address alone cannot tell your reaction from theirs.
+    const sender = message.isFromMe ? "\0me" : message.from.address;
+    if (message.removed) entry.senders.delete(sender);
+    else entry.senders.set(sender, message.isFromMe);
+    if (entry.senders.size === 0) bucket.delete(key);
+    else bucket.set(key, entry);
     memberships.set(message.target, bucket);
   }
 
@@ -48,9 +54,10 @@ export function foldTapbacks(messages: Message[]): ThreadRow[] {
     const chipMap = memberships.get(message.guid);
     const list: TapbackChip[] = [];
     if (chipMap) {
-      for (const reaction of CHIP_ORDER) {
-        const senders = chipMap.get(reaction);
-        if (senders) list.push({ reaction, count: senders.size, fromMe: [...senders.values()].some(Boolean) });
+      const keys = [...CHIP_ORDER.filter((reaction) => chipMap.has(reaction)), ...[...chipMap.keys()].filter((key) => key.startsWith("emoji:"))];
+      for (const key of keys) {
+        const entry = chipMap.get(key)!;
+        list.push({ ...entry.chip, count: entry.senders.size, fromMe: [...entry.senders.values()].some(Boolean) });
       }
     }
     rows.push({ kind: "message", key: message.guid, message, chips: list });
@@ -69,7 +76,7 @@ export function sortedChats(chats: Map<ChatGuid, Chat>, query: string): Chat[] {
           const preview = chat.lastMessage?.body.toLowerCase() ?? "";
           return preview.includes(q);
         });
-  return filtered.toSorted((a, b) => (b.lastMessage?.sentAt ?? 0) - (a.lastMessage?.sentAt ?? 0));
+  return filtered.toSorted((a, b) => chatActivity(b) - chatActivity(a));
 }
 
 export function lastOwnReceipt(messages: Message[]): TextMessage | undefined {

@@ -1,13 +1,14 @@
-import { BbClient, BbError } from "./bb/rest.ts";
-import { connectBbSocket, type SocketHandlers } from "./bb/socket.ts";
-import { openLocalFile, saveAttachment } from "./attachments.ts";
+import { attachmentPath, openLocalFile, readAttachment, saveAttachment } from "./attachments.ts";
 import { writeClipboard } from "./clipboard.ts";
-import { parseHandleAddress, parseMessageGuid, type ChatGuid, type MessageGuid } from "./domain/ids.ts";
-import { emptyState, privateApiAvailable, type AppEvent, type AppState, type Attachment, type Intent, type SavedSession, type Session } from "./domain/model.ts";
+import { contactLookupKey, parseMessageGuid, type ChatGuid, type MessageGuid } from "./domain/ids.ts";
+import { bridgeAvailable, chatActivity, emptyState, serviceOfChatGuid, type AppEvent, type AppState, type Attachment, type Contact, type Intent, type Message, type SavedSession, type Session, type TextMessage } from "./domain/model.ts";
 import { reduce } from "./domain/reduce.ts";
+import { lastOwnReceipt } from "./domain/view.ts";
+import { BackendError, ImsgClient } from "./imsg/client.ts";
+import { parseMessageRecord, type ParsedRecord } from "./imsg/parse.ts";
+import { ImsgMissingError, RpcConnection, type RpcConnector } from "./imsg/rpc.ts";
 import { createJournal, type Journal } from "./journal.ts";
 
-type SocketLike = { close: () => unknown };
 type Timer = ReturnType<typeof setTimeout>;
 type ImageLoad = {
   attachment: Attachment;
@@ -15,53 +16,92 @@ type ImageLoad = {
   resolve: (bytes: Uint8Array) => void;
   reject: (error: Error) => void;
 };
+type LocalSend = { chatGuid: ChatGuid; text: string; createdAt: number };
 
 const MAX_ACTIVE_IMAGE_LOADS = 2;
+const CHAT_LIMIT = 500;
+// imsg lists chats at about 5 ms each (2.3 s for 500), so the first screenful is asked for
+// alone and the rest follows in the background.
+const FIRST_CHATS = 60;
+const HISTORY_PAGE = 50;
+// The conversations at the top of the list, where it shows at startup, have their service
+// looked up; the rest keep their row's until opened or a message arrives.
+const SERVICE_LOOKUPS = 40;
+// Previews land a few dozen a second; applied together, they redraw the list a few times.
+const PREVIEW_FLUSH_MS = 250;
+const RESTART_DELAYS = [1_000, 2_000, 5_000, 15_000];
+const NOTICE_DURATIONS = { info: 5_000, error: 10_000 };
+// Background results (previews, services, contacts, streamed rows) wait this long for others,
+// so a startup with hundreds of conversations renders a few dozen times, not a thousand.
+const BATCH_MS = 16;
 
 export type SessionOptions = {
-  url: string;
-  password: string;
-  client?: BbClient;
+  // Starts one `imsg rpc` child; called again to restart it.
+  connect: () => RpcConnector;
   journal?: Journal;
   clipboard?: (text: string) => void | Promise<void>;
   saveAttachment?: typeof saveAttachment;
   openFile?: (path: string) => Promise<void>;
+  // Opens a web link in this Mac's browser; over SSH links go to the clipboard instead.
+  openLink?: (url: string) => Promise<void>;
+  readAttachment?: (attachment: Attachment) => Promise<Uint8Array>;
   attachmentDirectory?: string;
   ssh?: boolean;
   quit?: () => void | Promise<void>;
-  connectSocket?: (args: { url: string; password: string; handlers: SocketHandlers }) => SocketLike;
   now?: () => number;
+  restartDelays?: number[];
 };
 
 export function createSession(options: SessionOptions): Session {
-  const client = options.client ?? new BbClient({ url: options.url, password: options.password });
-  const journal = options.journal ?? createJournal({ url: options.url, password: options.password });
+  const journal = options.journal ?? createJournal();
   const clipboard = options.clipboard ?? writeClipboard;
   const saveFile = options.saveAttachment ?? saveAttachment;
   const openFile = options.openFile ?? openLocalFile;
-  const socketFactory = options.connectSocket ?? connectBbSocket;
+  const openLinkHere = options.openLink ?? openLocalFile;
+  const loadBytes = options.readAttachment ?? readAttachment;
+  const restartDelays = options.restartDelays ?? RESTART_DELAYS;
   const now = options.now ?? Date.now;
   let state = emptyState();
-  let socket: SocketLike | undefined;
+  let client: ImsgClient | undefined;
+  let connecting: Promise<void> | undefined;
+  let subscription: number | undefined;
+  let lastRowId: number | undefined;
+  let restartTimer: Timer | undefined;
+  let noticeTimer: Timer | undefined;
+  let notifyTimer: Timer | undefined;
+  let acting = 0;
+  let changed = false;
+  let restartAttempt = 0;
+  let blocked = false;
   let closed = false;
-  let onlineOnce = false;
   let requestSequence = 0;
   let startPromise: Promise<void> | undefined;
+  let chatsReload: Timer | undefined;
   const listeners = new Set<() => void>();
   const historyLoads = new Map<ChatGuid, Promise<void>>();
   const effects = new Set<Promise<unknown>>();
   const typingStarts = new Map<ChatGuid, Timer>();
   const typingStops = new Map<ChatGuid, Timer>();
   const incomingTyping = new Map<ChatGuid, Timer>();
+  const receiptChecks = new Set<Timer>();
   const readRequests = new Map<ChatGuid, number>();
+  const previewed = new Set<ChatGuid>();
+  let previewBatch: { chatGuid: ChatGuid; message: Message }[] = [];
+  let previewContacts: Contact[] = [];
+  let previewTimer: Timer | undefined;
+  // imsg answers every request from one database, so background work waits while anything
+  // the user is waiting on (a conversation opening, a send) is in flight.
+  let foreground = 0;
+  const foregroundWaiters: (() => void)[] = [];
+  // One service lookup per chat at a time; a newer message waits and replaces older waiters.
+  const serviceLookups = new Map<ChatGuid, { at: number; next?: TextMessage }>();
+  const ackedGuids = new Set<MessageGuid>();
+  const localSends = new Map<MessageGuid, LocalSend>();
   const imageCache = new Map<string, Uint8Array>();
   const imageLoads = new Map<string, Promise<Uint8Array>>();
-  const activeImageLoads = new Set<string>();
+  const activeImageLoads = new Map<string, ImageLoad>();
   const queuedImageLoads: ImageLoad[] = [];
   let imageCacheBytes = 0;
-  let contactsLoad: Promise<void> | undefined;
-  let serverWatermark = 0;
-  let disconnectedAt: number | undefined;
 
   function snapshotForJournal(): SavedSession {
     return {
@@ -82,6 +122,22 @@ export function createSession(options: SessionOptions): Session {
     return promise;
   }
 
+  function foregroundWork<T>(work: Promise<T>): Promise<T> {
+    foreground += 1;
+    const done = () => {
+      foreground -= 1;
+      if (!foreground) for (const resume of foregroundWaiters.splice(0)) resume();
+    };
+    work.then(done, done);
+    return work;
+  }
+
+  // Waits for the foreground to be idle; false once this connection is gone.
+  async function gaveWay(active: ImsgClient): Promise<boolean> {
+    if (foreground) await new Promise<void>((resume) => foregroundWaiters.push(resume));
+    return client === active && !closed;
+  }
+
   function persist(): void {
     track(journal.save(snapshotForJournal())).catch(report);
   }
@@ -91,115 +147,368 @@ export function createSession(options: SessionOptions): Session {
     const previous = state;
     state = reduce(state, event, now());
     if (state !== previous) {
-      for (const listener of listeners) listener();
+      changed = true;
+      // What a key does shows at once (act notifies as it returns); the rest is batched.
+      if (!acting && !notifyTimer) notifyTimer = setTimeout(notify, BATCH_MS);
       if (save && durableChange(event)) persist();
     }
-    if (event.type === "connection" && event.connection === "online") {
-      if (onlineOnce && previous.connection === "offline") track(reconcile()).catch(report);
-      onlineOnce = true;
-    }
-    if (event.type === "connection" && event.connection === "offline") disconnectedAt = now();
-    if (event.type === "message-upserted") {
-      serverWatermark = Math.max(serverWatermark, event.message.sentAt);
-      handleLiveMessage(event.message);
-    }
+    if (state.notice !== previous.notice) expireNotice();
+    if (event.type === "message-upserted") handleLiveMessage(event.message);
     if (event.type === "typing") expireIncomingTyping(event.chatGuid, event.display);
   }
 
-  function handleLiveMessage(message: Extract<AppEvent, { type: "message-upserted" }>['message']): void {
-    if (message.kind === "text" && message.isFromMe && message.tempGuid && state.outbox.has(message.tempGuid)) {
-      dispatch({ type: "send-acked", tempGuid: message.tempGuid, guid: message.guid });
+  function notify(): void {
+    if (notifyTimer) clearTimeout(notifyTimer);
+    notifyTimer = undefined;
+    if (!changed || closed) return;
+    changed = false;
+    for (const listener of listeners) listener();
+  }
+
+  // A notice gives way to the key hints again after a while, an error after longer.
+  function expireNotice(): void {
+    if (noticeTimer) clearTimeout(noticeTimer);
+    noticeTimer = undefined;
+    const notice = state.notice;
+    if (!notice) return;
+    noticeTimer = setTimeout(() => {
+      noticeTimer = undefined;
+      if (state.notice === notice) dispatch({ type: "notice", notice: null }, false);
+    }, NOTICE_DURATIONS[notice.kind]);
+  }
+
+  function bridge(): boolean {
+    return bridgeAvailable(state.capabilities);
+  }
+
+  // imsg streams names alongside rows; only dispatch ones the state has not seen, since
+  // applying contacts touches every chat and loaded message.
+  function learn(contacts: Contact[]): void {
+    const fresh = contacts.filter((contact) => [...contact.phones, ...contact.emails].some((address) => state.contacts.get(contactLookupKey(address))?.displayName !== contact.displayName));
+    if (fresh.length) dispatch({ type: "contacts-loaded", contacts: fresh });
+  }
+
+  // A merged conversation (any;-;…) goes over whichever service its newest message used;
+  // the chat row's stored service can be years out of date.
+  function learnService(chatGuid: ChatGuid, message: Message | undefined, active = client): Promise<void> {
+    if (!active || message?.kind !== "text" || message.guid.startsWith("local-") || serviceOfChatGuid(chatGuid) !== undefined) return Promise.resolve();
+    if ((state.chats.get(chatGuid)?.serviceAt ?? Number.NEGATIVE_INFINITY) >= message.sentAt) return Promise.resolve();
+    const running = serviceLookups.get(chatGuid);
+    if (running) {
+      // A replayed watch can stream hundreds of rows; only the newest one matters.
+      if (message.sentAt > Math.max(running.at, running.next?.sentAt ?? Number.NEGATIVE_INFINITY)) running.next = message;
+      return Promise.resolve();
     }
-    if (!state.chats.has(message.chatGuid) || state.chats.get(message.chatGuid)?.provisional) {
-      track(discoverChat(message.chatGuid)).catch(report);
-    }
+    const lookup: { at: number; next?: TextMessage } = { at: message.sentAt };
+    serviceLookups.set(chatGuid, lookup);
+    return track(active.sendStatus(message.guid)).then((status) => {
+      if (status.service && client === active) dispatch({ type: "chat-service", chatGuid, service: status.service, at: message.sentAt }, false);
+    }).catch(() => undefined).then(() => {
+      if (serviceLookups.get(chatGuid) !== lookup) return undefined;
+      serviceLookups.delete(chatGuid);
+      return lookup.next && client === active ? learnService(chatGuid, lookup.next, active) : undefined;
+    });
+  }
+
+  function handleLiveMessage(message: Message): void {
+    if (message.kind === "text" && message.isFromMe) matchLocalSend(message);
+    void learnService(message.chatGuid, message);
+    const chat = state.chats.get(message.chatGuid);
+    if (!chat || chat.provisional || chat.rowId === undefined) scheduleChatsReload();
     if (message.kind === "text" && !message.isFromMe &&
         (state.input.kind === "transcript" || state.input.kind === "composer") && message.chatGuid === state.input.chatGuid) {
       markRead(message.chatGuid);
     }
   }
 
-  async function discoverChat(chatGuid: ChatGuid): Promise<void> {
-    const page = await client.listChats({ guid: chatGuid, limit: 1 });
-    if (page.chats.length === 0) return;
-    dispatch({ type: "chats-loaded", chats: page.chats });
-    await loadContacts();
-  }
-
-  function loadContacts(): Promise<void> {
-    if (contactsLoad) return contactsLoad;
-    contactsLoad = client.queryContacts([])
-      .then((contacts) => dispatch({ type: "contacts-loaded", contacts }))
-      .catch(() => report(new Error("Contacts unavailable. Press R in the conversation list to retry.")))
-      .finally(() => { contactsLoad = undefined; });
-    return contactsLoad;
-  }
-
-  async function loadAllChats(): Promise<ChatGuid[]> {
-    const guids: ChatGuid[] = [];
-    let offset: number | null = 0;
-    while (offset !== null && !closed) {
-      const page = await client.listChats({ offset, limit: 200 });
-      dispatch({ type: "chats-loaded", chats: page.chats });
-      guids.push(...page.chats.map((chat) => chat.guid));
-      offset = page.nextOffset;
+  // imsg cannot tag a send with our temporary GUID, so an outgoing row that streams in
+  // before (or instead of) the send result is matched to its pending bubble by chat and text.
+  function matchLocalSend(message: TextMessage): void {
+    if (ackedGuids.has(message.guid) || message.guid.startsWith("local-")) return;
+    const text = message.body.trim();
+    // Only rows written after the send started can be its result.
+    const near = (createdAt: number) => message.sentAt >= createdAt - 5_000 && message.sentAt - createdAt < 10 * 60_000;
+    for (const [tempGuid, outgoing] of state.outbox) {
+      if (outgoing.chatGuid === message.chatGuid && outgoing.text.trim() === text && near(outgoing.createdAt)) {
+        ackedGuids.add(message.guid);
+        dispatch({ type: "send-acked", tempGuid, guid: message.guid });
+        return;
+      }
     }
+    for (const [tempGuid, sent] of localSends) {
+      if (sent.chatGuid === message.chatGuid && sent.text.trim() === text && near(sent.createdAt)) {
+        localSends.delete(tempGuid);
+        ackedGuids.add(message.guid);
+        dispatch({ type: "send-acked", tempGuid, guid: message.guid });
+        return;
+      }
+    }
+  }
+
+  function applyRecord(record: ParsedRecord): void {
+    if (record.rowId !== undefined) lastRowId = Math.max(lastRowId ?? 0, record.rowId);
+    learn(record.contacts);
+    for (const message of record.messages) dispatch({ type: "message-upserted", message });
+  }
+
+  function notification(method: string, params: unknown): void {
+    const payload = typeof params === "object" && params !== null ? params as Record<string, unknown> : {};
+    if (method === "message" && payload.subscription === subscription) {
+      try { applyRecord(parseMessageRecord(payload.message)); } catch { /* skip malformed rows */ }
+    } else if (method === "watch.overflow" && payload.subscription === subscription) {
+      // The cursor is at or before the first dropped row, so resuming from it cannot skip one.
+      if (typeof payload.resume_after_rowid === "number") lastRowId = payload.resume_after_rowid;
+      subscription = undefined;
+      const active = client;
+      if (active) track(active.subscribe(lastRowId).then((id) => { if (client === active) subscription = id; })).catch(stopped);
+    } else if (method === "bridge.event") {
+      const event = typeof payload.event === "object" && payload.event !== null ? payload.event as Record<string, unknown> : {};
+      const data = typeof event.data === "object" && event.data !== null ? event.data as Record<string, unknown> : {};
+      const chatGuid = typeof data.chatGuid === "string" ? data.chatGuid as ChatGuid : undefined;
+      if (chatGuid && state.chats.has(chatGuid) && (event.event === "started-typing" || event.event === "stopped-typing")) {
+        dispatch({ type: "typing", chatGuid, display: event.event === "started-typing" }, false);
+      }
+    }
+  }
+
+  function connect(): Promise<void> {
+    if (connecting) return connecting;
+    connecting = (async () => {
+      clearRestart();
+      const previous = client;
+      client = undefined;
+      subscription = undefined;
+      await previous?.close().catch(() => undefined);
+      if (closed) return;
+      dispatch({ type: "connection", connection: "connecting" });
+      const rpc = new RpcConnection(options.connect());
+      const active = new ImsgClient(rpc);
+      client = active;
+      rpc.onNotification((method, params) => { if (client === active) notification(method, params); });
+      rpc.onExit((error) => { if (client === active) stopped(error); });
+      try {
+        const status = await active.status();
+        if (client !== active) return;
+        dispatch({ type: "capabilities", capabilities: { bridge: status.bridgeReady } });
+        if (!status.databaseReady) {
+          unavailable(accessHelp(status.databaseError));
+          return;
+        }
+        // Subscribe before listing so nothing that arrives in between is missed.
+        subscription = await active.subscribe(lastRowId);
+        if (client !== active) return;
+        blocked = false;
+        restartAttempt = 0;
+        dispatch({ type: "connection", connection: "online" });
+        const listed = await loadChats(active, FIRST_CHATS);
+        const loaded = [...state.history.entries()].filter(([, value]) => value.kind !== "unloaded").map(([guid]) => guid);
+        for (const guid of loaded) void loadHistory(guid, "latest");
+        if (status.bridgeReady) track(active.subscribeBridgeEvents()).catch(() => undefined);
+        void loadInBackground(active, listed).catch(() => undefined);
+      } catch (error) {
+        if (client !== active) return;
+        failConnection(error);
+      }
+    })().finally(() => { connecting = undefined; });
+    return connecting;
+  }
+
+  function failConnection(error: unknown): void {
+    if (error instanceof BackendError && (error.kind === "missing" || error.kind === "access")) {
+      unavailable(error.kind === "access" ? accessHelp(error.message) : error.message);
+      return;
+    }
+    dispatch({ type: "connection", connection: "offline" });
+    if (state.chatsStatus !== "ready") dispatch({ type: "chats-status", status: "error" });
+    report(error);
+    scheduleRestart();
+  }
+
+  // Shown where the conversation goes, for as long as it holds. With a conversation open
+  // over that spot, a notice points it out as well.
+  function unavailable(reason: string): void {
+    dispatch({ type: "connection", connection: "no-access", reason });
+    if (state.chatsStatus !== "ready") dispatch({ type: "chats-status", status: "error" });
+    if (state.selected) report(new Error(reason));
+  }
+
+  // The child exited underneath us. Pending requests were already rejected; restart it and
+  // resume the watch from the last row seen so nothing is lost in between.
+  function stopped(error: unknown): void {
+    if (closed) return;
+    const dead = client;
+    client = undefined;
+    subscription = undefined;
+    void dead?.close().catch(() => undefined);
+    failConnection(error instanceof ImsgMissingError ? new BackendError("missing", error.message) : error);
+  }
+
+  function scheduleRestart(): void {
+    if (closed || restartTimer) return;
+    const delay = restartDelays[Math.min(restartAttempt, restartDelays.length - 1)] ?? 15_000;
+    restartAttempt += 1;
+    restartTimer = setTimeout(() => {
+      restartTimer = undefined;
+      track(connect()).catch(report);
+    }, delay);
+  }
+
+  function clearRestart(): void {
+    if (restartTimer) clearTimeout(restartTimer);
+    restartTimer = undefined;
+  }
+
+  function accessHelp(detail: string | null): string {
+    const fix = options.ssh
+      ? "On the Mac, turn on System Settings > General > Sharing > Remote Login > Allow full disk access for remote users, then reconnect over SSH."
+      : "Give your terminal Full Disk Access in System Settings > Privacy & Security, then relaunch it.";
+    return `Cannot read the Messages database${detail ? ` (${detail})` : ""}. ${fix}`;
+  }
+
+  // Returns how many chats came back.
+  async function loadChats(active = client, limit = CHAT_LIMIT): Promise<number> {
+    if (!active) throw new BackendError("stopped", "imsg is not running");
+    const { chats, contacts } = await active.chats(limit);
+    if (client !== active) return 0;
+    dispatch({ type: "chats-loaded", chats });
+    learn(contacts);
     dispatch({ type: "chats-status", status: "ready" });
-    return [...new Set(guids)];
+    return chats.length;
+  }
+
+  // After the first screenful of the list: the rest of it, one long request best made before
+  // a conversation is picked; the previews and services of the chats at its top; then every
+  // other preview.
+  async function loadInBackground(active: ImsgClient, listed: number): Promise<void> {
+    if (listed >= FIRST_CHATS && await gaveWay(active)) await loadChats(active);
+    const top = await loadPreviews(active, SERVICE_LOOKUPS);
+    for (const { chatGuid, message } of top) {
+      if (!await gaveWay(active)) return;
+      await learnService(chatGuid, message, active);
+    }
+    await loadPreviews(active);
+  }
+
+  // chats.list has no message text, so each chat's newest message is fetched for its preview:
+  // newest chats first, one at a time, and never while the user is waiting on something.
+  async function loadPreviews(active: ImsgClient, limit = Number.POSITIVE_INFINITY): Promise<{ chatGuid: ChatGuid; message: Message }[]> {
+    const queue = [...state.chats.values()]
+      .filter((chat) => chat.rowId !== undefined && !previewed.has(chat.guid))
+      .sort((a, b) => chatActivity(b) - chatActivity(a))
+      .slice(0, limit);
+    const fetched: { chatGuid: ChatGuid; message: Message }[] = [];
+    for (const chat of queue) {
+      if (!await gaveWay(active)) break;
+      // Marked when started, so a restart leaves unfetched chats for the next pass.
+      if (previewed.has(chat.guid)) continue;
+      previewed.add(chat.guid);
+      try {
+        const page = await active.history(chat.rowId!, { limit: 1 });
+        const record = page.records[0];
+        const message = record?.messages[0];
+        if (!record || !message || client !== active) continue;
+        queuePreview(chat.guid, message, record.contacts);
+        fetched.push({ chatGuid: chat.guid, message });
+      } catch {
+        previewed.delete(chat.guid);
+      }
+    }
+    flushPreviews();
+    return fetched;
+  }
+
+  function queuePreview(chatGuid: ChatGuid, message: Message, contacts: Contact[]): void {
+    previewBatch.push({ chatGuid, message });
+    previewContacts.push(...contacts);
+    if (!previewTimer) previewTimer = setTimeout(flushPreviews, PREVIEW_FLUSH_MS);
+  }
+
+  function flushPreviews(): void {
+    if (previewTimer) clearTimeout(previewTimer);
+    previewTimer = undefined;
+    const previews = previewBatch;
+    const contacts = previewContacts;
+    previewBatch = [];
+    previewContacts = [];
+    if (closed) return;
+    if (contacts.length) learn(contacts);
+    if (previews.length) dispatch({ type: "chat-previews", previews });
+  }
+
+  function scheduleChatsReload(): void {
+    if (chatsReload || closed) return;
+    chatsReload = setTimeout(() => {
+      chatsReload = undefined;
+      const active = client;
+      if (!active) return;
+      track(loadChats(active).then(() => loadPreviews(active))).catch(() => undefined);
+    }, 300);
   }
 
   function loadHistory(chatGuid: ChatGuid, mode: "latest" | "older"): Promise<void> {
     const current = historyLoads.get(chatGuid);
     if (current) return current;
-    const request = ++requestSequence;
     const history = state.history.get(chatGuid);
     if (mode === "older" && history?.kind === "ready" && history.next === null) return Promise.resolve();
-    const cursor = mode === "older" && history && "next" in history ? history.next ?? undefined : undefined;
+    const before = mode === "older" && history && "next" in history ? history.next?.before : undefined;
+    const request = ++requestSequence;
     dispatch({ type: "history-loading", chatGuid, request, mode });
-    const operation = client.listMessages(chatGuid, { ...(cursor ? { cursor } : {}) })
+    const chat = state.chats.get(chatGuid);
+    const active = client;
+    const operation = foregroundWork((async () => {
+      if (!active) throw new BackendError("stopped", "imsg is not running. Press R to retry.");
+      if (chat?.rowId === undefined) throw new BackendError("invalid", "This conversation is not in the Messages database yet.");
+      return active.history(chat.rowId, { limit: HISTORY_PAGE, ...(before !== undefined ? { before } : {}) });
+    })()
       .then((page) => {
-        reconcileOutbox(page.messages);
-        dispatch({ type: "history-loaded", chatGuid, request, page });
+        for (const record of page.records) learn(record.contacts);
+        const messages = page.records.flatMap((record) => record.messages);
+        const oldest = page.records.reduce<number | undefined>((min, record) => {
+          const sentAt = record.messages[0]?.sentAt;
+          return sentAt === undefined ? min : Math.min(min ?? sentAt, sentAt);
+        }, undefined);
+        dispatch({ type: "history-loaded", chatGuid, request, page: { messages, next: page.count >= HISTORY_PAGE && oldest !== undefined ? { before: oldest } : null } });
+        for (const message of messages) if (message.kind === "text" && message.isFromMe) matchLocalSend(message);
+        if (mode === "latest") {
+          checkReceipt(chatGuid);
+          const newest = messages.reduce<Message | undefined>((found, message) => message.kind === "text" && message.sentAt > (found?.sentAt ?? Number.NEGATIVE_INFINITY) ? message : found, undefined);
+          void learnService(chatGuid, newest, active);
+        }
       })
       .catch((error) => dispatch({ type: "history-failed", chatGuid, request, message: errorText(error) }))
-      .finally(() => historyLoads.delete(chatGuid));
+      .finally(() => historyLoads.delete(chatGuid)));
     historyLoads.set(chatGuid, operation);
     track(operation).catch(() => undefined);
     return operation;
   }
 
-  async function hydrate(): Promise<void> {
-    dispatch({ type: "connection", connection: "connecting" });
-    const [online, capabilities] = await Promise.all([client.ping(), client.serverInfo()]);
-    dispatch({ type: "connection", connection: online ? "online" : "offline" });
-    dispatch({ type: "capabilities", capabilities });
-    await loadAllChats();
-    track(loadContacts()).catch(() => undefined);
-  }
-
-  async function reconcile(): Promise<void> {
-    if (closed) return;
-    const before = now();
-    const after = Math.max(0, Math.min(serverWatermark || before, disconnectedAt ?? before) - 1_000);
-    let offset: number | null = 0;
-    while (offset !== null && !closed) {
-      const page = await client.messagesSince({ after, before, offset, limit: 200 });
-      for (const message of page.messages) dispatch({ type: "message-upserted", message });
-      offset = page.nextOffset;
-    }
-    disconnectedAt = undefined;
-    const loaded = [...state.history.entries()].filter(([, value]) => value.kind !== "unloaded").map(([guid]) => guid);
-    await loadAllChats();
-    await Promise.all(loaded.map((guid) => loadHistory(guid, "latest")));
+  // Shows Delivered/Read under the newest outgoing message, like Messages does.
+  function checkReceipt(chatGuid: ChatGuid, delay = 0): void {
+    const timer = setTimeout(() => {
+      receiptChecks.delete(timer);
+      const message = lastOwnReceipt(state.messages.get(chatGuid) ?? []);
+      const active = client;
+      if (!message || !active || message.guid.startsWith("local-") || message.status === "read") return;
+      track(active.sendStatus(message.guid).then((receipt) => {
+        // Recorded first, so the upsert below does not look the same message up again.
+        if (receipt.service && serviceOfChatGuid(chatGuid) === undefined) dispatch({ type: "chat-service", chatGuid, service: receipt.service, at: message.sentAt }, false);
+        const status = receipt.readAt ? "read" : receipt.state === "delivered" ? "delivered" : receipt.state === "failed" ? "failed" : undefined;
+        if (!status || status === message.status) return;
+        dispatch({ type: "message-upserted", message: { ...message, status, ...(receipt.deliveredAt ? { deliveredAt: receipt.deliveredAt } : {}), ...(receipt.readAt ? { readAt: receipt.readAt } : {}) } });
+      })).catch(() => undefined);
+    }, delay);
+    receiptChecks.add(timer);
   }
 
   function markRead(chatGuid: ChatGuid): void {
     dispatch({ type: "mark-read", chatGuid });
-    if (!privateApiAvailable(state.capabilities)) return;
+    const active = client;
+    // Read receipts need imsg's bridge; without it `read` may bring Messages to the front.
+    if (!bridge() || !active) return;
     const request = (readRequests.get(chatGuid) ?? 0) + 1;
     readRequests.set(chatGuid, request);
     dispatch({ type: "read-requested", chatGuid });
-    track(client.markRead(chatGuid)).then(() => {
+    track(active.markRead(chatGuid)).then(() => {
       if (readRequests.get(chatGuid) !== request) return;
       dispatch({ type: "read-succeeded", chatGuid });
     }).catch((error) => {
@@ -211,18 +520,19 @@ export function createSession(options: SessionOptions): Session {
   function updateTyping(chatGuid: ChatGuid, text: string): void {
     clearTimer(typingStarts, chatGuid);
     clearTimer(typingStops, chatGuid);
-    if (!privateApiAvailable(state.capabilities)) return;
+    const active = client;
+    if (!bridge() || !active) return;
     if (!text.trim()) {
-      track(client.stopTyping(chatGuid)).catch(() => undefined);
+      track(active.typing(chatGuid, false)).catch(() => undefined);
       return;
     }
     typingStarts.set(chatGuid, setTimeout(() => {
       typingStarts.delete(chatGuid);
-      track(client.startTyping(chatGuid)).catch(() => undefined);
+      track(active.typing(chatGuid, true)).catch(() => undefined);
     }, 250));
     typingStops.set(chatGuid, setTimeout(() => {
       typingStops.delete(chatGuid);
-      track(client.stopTyping(chatGuid)).catch(() => undefined);
+      track(active.typing(chatGuid, false)).catch(() => undefined);
     }, 5_000));
   }
 
@@ -231,56 +541,122 @@ export function createSession(options: SessionOptions): Session {
     const draft = state.drafts.get(chatGuid);
     const text = existing?.text ?? draft?.text ?? "";
     if (!text.trim()) return;
-    const tempGuid = retry ?? parseMessageGuid(crypto.randomUUID());
+    const tempGuid = retry ?? parseMessageGuid(`local-${crypto.randomUUID()}`);
     const replyTo = existing?.replyTo ?? draft?.replyTo ?? null;
     if (!existing) dispatch({ type: "send-requested", chatGuid, text, tempGuid, ...(replyTo ? { replyTo } : {}) });
-    const promise = journal.flush().then(() => client.sendText({ chatGuid, message: text, tempGuid, ...(replyTo ? { replyTo } : {}) }))
-      .then((message) => {
-        if (state.outbox.has(tempGuid)) dispatch({ type: "send-acked", tempGuid, guid: message.guid });
-        dispatch({ type: "message-upserted", message });
+    const active = client;
+    const refusal = !active ? "imsg is not running. Press Shift+R in the conversation list to restart it."
+      : blocked ? "imsg is holding an earlier send whose outcome is unknown. Check Messages, then press Shift+R in the conversation list to restart imsg."
+      : replyTo && !bridge() ? "Replies need the imsg bridge. Send without replying, or start the bridge with imsg launch."
+      : undefined;
+    if (refusal !== undefined || !active) {
+      const error = refusal ?? "imsg is not running.";
+      dispatch({ type: "send-failed", tempGuid, error, uncertain: false });
+      report(new Error(error));
+      return;
+    }
+    const promise = journal.flush().then(() => foregroundWork(active.sendText({ chatGuid, text, ...(replyTo ? { replyTo } : {}) })))
+      .then((result) => {
+        if (result.guid) {
+          ackedGuids.add(result.guid);
+          if (state.outbox.has(tempGuid)) dispatch({ type: "send-acked", tempGuid, guid: result.guid });
+          checkReceipt(chatGuid, 3_000);
+          checkReceipt(chatGuid, 15_000);
+        } else {
+          // Messages accepted it but imsg did not observe the row yet; match it when it streams in.
+          localSends.set(tempGuid, { chatGuid, text, createdAt: now() });
+          if (state.outbox.has(tempGuid)) dispatch({ type: "send-acked", tempGuid, guid: tempGuid });
+        }
       })
       .catch((error) => {
+        if (error instanceof BackendError && error.kind === "blocked") blocked = true;
         if (!state.outbox.has(tempGuid)) return;
-        dispatch({ type: "send-failed", tempGuid, error: errorText(error), uncertain: error instanceof BbError && error.ambiguous });
+        dispatch({ type: "send-failed", tempGuid, error: errorText(error), uncertain: error instanceof BackendError && error.ambiguous });
+        report(error);
       });
     track(promise).catch(() => undefined);
-  }
-
-  function reconcileOutbox(messages: Extract<AppEvent, { type: "messages-loaded" }>['messages']): void {
-    for (const message of messages) {
-      if (message.kind === "text" && message.isFromMe && message.tempGuid && state.outbox.has(message.tempGuid)) {
-        dispatch({ type: "send-acked", tempGuid: message.tempGuid, guid: message.guid });
-      }
-    }
   }
 
   function createChat(intent: Extract<Intent, { type: "create-chat" }>): void {
     const input = state.input;
     if (input.kind !== "new-chat" || input.busy) return;
     const addresses = intent.addresses.split(/[;,\n]/).map((value) => value.trim()).filter(Boolean);
-    if (!addresses.length || !intent.text.trim()) return;
+    const text = intent.text.trim();
+    if (!addresses.length || !text) return;
+    const active = client;
+    const refusal = !active ? "imsg is not running." : addresses.length > 1 && !bridge() ? "Group conversations need the imsg bridge. Start one in Messages, or run imsg launch." : undefined;
+    if (refusal || !active) {
+      dispatch({ type: "input", input: { ...input, error: refusal ?? "imsg is not running." } });
+      return;
+    }
     dispatch({ type: "input", input: { ...input, busy: true, error: null } });
-    const tempGuid = parseMessageGuid(crypto.randomUUID());
-    const promise = client.createChat({ addresses, message: intent.text.trim(), service: intent.service, tempGuid })
-      .then(({ chat, messages }) => {
-        dispatch({ type: "chats-loaded", chats: [chat] });
-        dispatch({ type: "messages-loaded", chatGuid: chat.guid, messages });
-        act({ type: "open-chat", chatGuid: chat.guid });
-        void loadContacts();
+    const operation = foregroundWork(addresses.length === 1
+      ? active.sendDirect({ to: addresses[0]!, text, service: intent.service })
+      : active.createChat({ addresses, text }));
+    const promise = operation
+      .then(async (result) => {
+        if (result.guid) ackedGuids.add(result.guid);
+        await loadChats(active);
+        const chatGuid = result.chatGuid && state.chats.has(result.chatGuid) ? result.chatGuid : findDirectChat(addresses);
+        if (chatGuid) act({ type: "open-chat", chatGuid });
+        else {
+          dispatch({ type: "input", input: { kind: "list" } });
+          dispatch({ type: "notice", notice: { kind: "info", text: "Sent. The conversation appears once Messages records it." } }, false);
+        }
       })
       .catch((error) => {
         const current = state.input;
-        if (current.kind === "new-chat") {
-          const uncertain = error instanceof BbError && error.ambiguous;
-          const message = uncertain ? `${errorText(error)} Delivery is uncertain. Close this form before trying again.` : errorText(error);
-          dispatch({ type: "input", input: { ...current, busy: uncertain, error: message } });
-        }
+        if (current.kind !== "new-chat") return;
+        const uncertain = error instanceof BackendError && error.ambiguous;
+        const message = uncertain ? `${errorText(error)} Delivery is uncertain. Close this form before trying again.` : errorText(error);
+        dispatch({ type: "input", input: { ...current, busy: uncertain, error: message } });
       });
     track(promise).catch(() => undefined);
   }
 
+  function findDirectChat(addresses: string[]): ChatGuid | undefined {
+    if (addresses.length !== 1) return undefined;
+    const key = contactLookupKey(addresses[0]!);
+    for (const chat of state.chats.values()) {
+      if (chat.kind === "dm" && chat.participants.some((participant) => contactLookupKey(participant.address) === key)) return chat.guid;
+    }
+    return undefined;
+  }
+
+  function react(intent: Extract<Intent, { type: "react" }>): void {
+    const active = client;
+    if (!bridge() || !active) {
+      report(new Error("Reactions need the imsg bridge (imsg launch), which requires SIP to be disabled."));
+      return;
+    }
+    track(active.tapback(intent)).catch(report);
+  }
+
+  function refresh(): void {
+    // A stopped, blocked, or unreadable backend needs a fresh child; otherwise re-list.
+    const active = client;
+    if (!active || blocked || state.connection !== "online") {
+      track(connect()).catch(report);
+      return;
+    }
+    track(loadChats(active).then(() => loadPreviews(active))).catch((error) => {
+      dispatch({ type: "chats-status", status: "error" });
+      report(error);
+    });
+  }
+
   function act(intent: Intent): void {
     if (closed) return;
+    acting += 1;
+    try {
+      perform(intent);
+    } finally {
+      acting -= 1;
+      if (!acting) notify();
+    }
+  }
+
+  function perform(intent: Intent): void {
     dispatch(intent);
     switch (intent.type) {
       case "open-chat": void loadHistory(intent.chatGuid, "latest"); markRead(intent.chatGuid); break;
@@ -288,12 +664,13 @@ export function createSession(options: SessionOptions): Session {
       case "send": clearTyping(intent.chatGuid); send(intent.chatGuid); break;
       case "retry-send": if (intent.confirmed || state.outbox.get(intent.tempGuid)?.phase !== "uncertain") { const outgoing = state.outbox.get(intent.tempGuid); if (outgoing) send(outgoing.chatGuid, intent.tempGuid); } break;
       case "load-history": void loadHistory(intent.chatGuid, intent.mode); break;
-      case "refresh": track(hydrate()).catch((error) => { dispatch({ type: "chats-status", status: "error" }); report(error); }); break;
+      case "refresh": refresh(); break;
       case "retry-read": markRead(intent.chatGuid); break;
-      case "react": track(client.sendReaction(intent).then((message) => { if (message) dispatch({ type: "message-upserted", message }); })).catch(report); break;
+      case "react": react(intent); break;
       case "create-chat": createChat(intent); break;
       case "attachment": track(handleAttachment(intent)).catch(report); break;
       case "copy": track(Promise.resolve(clipboard(intent.text))).then(() => dispatch({ type: "notice", notice: { kind: "info", text: "Copied." } })).catch(report); break;
+      case "open-link": track(openLink(intent.url)).catch(report); break;
       case "quit": track(Promise.resolve(options.quit?.())).catch(report); break;
     }
   }
@@ -323,8 +700,8 @@ export function createSession(options: SessionOptions): Session {
 
   function startImageLoad(load: ImageLoad): void {
     const guid = load.attachment.guid;
-    activeImageLoads.add(guid);
-    client.previewAttachment(load.attachment).then((bytes) => {
+    activeImageLoads.set(guid, load);
+    loadBytes(load.attachment).then((bytes) => {
       if (closed) {
         load.reject(new Error("Session is closed"));
         return;
@@ -353,15 +730,28 @@ export function createSession(options: SessionOptions): Session {
       });
   }
 
-  async function handleAttachment(intent: Extract<Intent, { type: "attachment" }>): Promise<void> {
-    const bytes = await client.downloadAttachment(intent.attachment);
-    const path = await saveFile({ attachment: intent.attachment, bytes, ...(options.attachmentDirectory ? { directory: options.attachmentDirectory } : {}) });
-    if (intent.action === "open" && !options.ssh) {
-      await openFile(path);
-      dispatch({ type: "notice", notice: { kind: "info", text: `Opened ${path}` } });
+  // A browser launched from here would open on the Mac, not in front of an SSH user, so the
+  // link goes to their clipboard (OSC 52); Ctrl+click opens it where the terminal supports it.
+  async function openLink(url: string): Promise<void> {
+    if (!/^https?:\/\//i.test(url)) throw new Error("Only web links can be opened.");
+    if (options.ssh) {
+      await clipboard(url);
+      dispatch({ type: "notice", notice: { kind: "info", text: "Link copied · Ctrl+click it to open in your browser" } });
       return;
     }
-    const prefix = intent.action === "open" && options.ssh ? "Saved on the server" : "Saved";
+    await openLinkHere(url);
+    dispatch({ type: "notice", notice: { kind: "info", text: "Opened in your browser" } });
+  }
+
+  async function handleAttachment(intent: Extract<Intent, { type: "attachment" }>): Promise<void> {
+    // The file is already on this Mac; opening locally needs no copy.
+    if (intent.action === "open" && !options.ssh) {
+      await openFile(attachmentPath(intent.attachment));
+      dispatch({ type: "notice", notice: { kind: "info", text: `Opened ${intent.attachment.name}` } });
+      return;
+    }
+    const path = await saveFile({ attachment: intent.attachment, ...(options.attachmentDirectory ? { directory: options.attachmentDirectory } : {}) });
+    const prefix = intent.action === "open" ? "Saved on this Mac" : "Saved";
     dispatch({ type: "notice", notice: { kind: "info", text: `${prefix} at ${path}` } });
   }
 
@@ -375,14 +765,7 @@ export function createSession(options: SessionOptions): Session {
         report(error);
       }
       if (closed) return;
-      socket = socketFactory({ url: options.url, password: options.password, handlers: { dispatch, diagnostic: report } });
-      try {
-        await hydrate();
-      } catch (error) {
-        dispatch({ type: "connection", connection: error instanceof BbError && error.kind === "auth" ? "auth-failed" : "offline" });
-        dispatch({ type: "chats-status", status: "error" });
-        report(error);
-      }
+      await connect();
     })();
     return startPromise;
   }
@@ -390,21 +773,32 @@ export function createSession(options: SessionOptions): Session {
   async function close(): Promise<void> {
     if (closed) return;
     closed = true;
-    for (const timer of typingStarts.values()) clearTimeout(timer);
-    for (const timer of typingStops.values()) clearTimeout(timer);
-    for (const timer of incomingTyping.values()) clearTimeout(timer);
+    clearRestart();
+    if (noticeTimer) clearTimeout(noticeTimer);
+    if (notifyTimer) clearTimeout(notifyTimer);
+    if (chatsReload) clearTimeout(chatsReload);
+    if (previewTimer) clearTimeout(previewTimer);
+    previewTimer = undefined;
+    previewBatch = [];
+    previewContacts = [];
+    // Background work waiting its turn sees the session closed and stops.
+    for (const resume of foregroundWaiters.splice(0)) resume();
+    for (const timer of [...typingStarts.values(), ...typingStops.values(), ...incomingTyping.values(), ...receiptChecks]) clearTimeout(timer);
     typingStarts.clear();
     typingStops.clear();
     incomingTyping.clear();
+    receiptChecks.clear();
     historyLoads.clear();
     imageCache.clear();
     imageCacheBytes = 0;
-    for (const load of queuedImageLoads.splice(0)) load.reject(new Error("Session is closed"));
+    for (const load of [...queuedImageLoads.splice(0), ...activeImageLoads.values()]) load.reject(new Error("Session is closed"));
     activeImageLoads.clear();
     imageLoads.clear();
     readRequests.clear();
-    socket?.close();
-    await client.close();
+    serviceLookups.clear();
+    const active = client;
+    client = undefined;
+    await active?.close().catch(() => undefined);
     listeners.clear();
     effects.clear();
     await journal.flush();
@@ -413,7 +807,8 @@ export function createSession(options: SessionOptions): Session {
   function clearTyping(chatGuid: ChatGuid): void {
     clearTimer(typingStarts, chatGuid);
     clearTimer(typingStops, chatGuid);
-    if (privateApiAvailable(state.capabilities)) track(client.stopTyping(chatGuid)).catch(() => undefined);
+    const active = client;
+    if (bridge() && active) track(active.typing(chatGuid, false)).catch(() => undefined);
   }
 
   function expireIncomingTyping(chatGuid: ChatGuid, display: boolean): void {

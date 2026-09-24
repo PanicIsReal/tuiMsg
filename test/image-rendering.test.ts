@@ -1,20 +1,54 @@
 import { describe, expect, it } from "vitest";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import sharp from "sharp";
 import { createElement } from "react";
 import { render } from "ink";
-import { decodeImage, deleteKittyImage, imageCellSize, kittyImage, supportsNativeImages, registerImage, repaintImages, cleanupImages } from "../src/image-rendering.ts";
+import { cachedConversion, configureGraphics, decodeImage, deleteKittyImage, imageCellSize, kittyImage, previewBound, supportsNativeImages, registerImage, repaintImages, cleanupImages } from "../src/image-rendering.ts";
 
 describe("image rendering", () => {
-  it.each(["png", "jpeg", "webp", "gif"] as const)("decodes real %s bytes into colored pixels and native PNG", async format => {
+  it.each(["png", "jpeg", "webp", "gif"] as const)("decodes real %s bytes into colored pixels, and a PNG for kitty", async format => {
     const bytes = await sharp({ create: { width: 12, height: 8, channels: 3, background: "#ff3300" } }).toFormat(format).toBuffer();
     const result = await decodeImage(bytes, 6, 4);
     expect(result.frames).toHaveLength(1);
     expect(result.frames[0]?.ansi).toContain("▄");
     expect(result.frames[0]?.ansi).toContain("\x1b[48;2;");
     expect(result.frames[0]?.ansi).not.toContain("undefined");
-    expect((await sharp(result.frames[0]?.png).metadata()).format).toBe("png");
+    expect(result.frames[0]?.png).toBeUndefined();
     expect(result.width).toBeLessThanOrEqual(6);
     expect(result.height).toBeLessThanOrEqual(4);
+    configureGraphics({ protocol: "kitty", cell: { width: 10, height: 20 } });
+    try {
+      const native = await decodeImage(bytes, 6, 4);
+      expect((await sharp(native.frames[0]?.png).metadata()).format).toBe("png");
+    } finally { configureGraphics(undefined); }
+  });
+
+  it("cuts a sixel into one strip per cell row, sized to cover its placeholder", async () => {
+    const bytes = await sharp({ create: { width: 300, height: 200, channels: 3, background: "#3366cc" } }).png().toBuffer();
+    configureGraphics({ protocol: "sixel", cell: { width: 10, height: 20 } });
+    try {
+      const image = await decodeImage(bytes, 48, 10);
+      // 300×200 on 10×20 cells: 30 columns by 10 rows, at 300×200 pixels.
+      expect([image.width, image.height]).toEqual([30, 10]);
+      const strips = image.frames[0]?.sixel ?? [];
+      expect(strips).toHaveLength(10);
+      for (const strip of strips) expect(strip).toMatch(/^\x1bP0;1;0q"1;1;300;20#/);
+      expect(image.frames[0]?.ansi.split("\n")).toHaveLength(10);
+      expect(image.frames[0]?.png).toBeUndefined();
+    } finally { configureGraphics(undefined); }
+  });
+
+  it("keeps an animation on its first frame for sixel, which is resent on every redraw", async () => {
+    const data = Buffer.concat([Buffer.from([255, 0, 0, 255, 0, 0]), Buffer.from([0, 0, 255, 0, 0, 255])]);
+    const bytes = await sharp(data, { raw: { width: 2, height: 2, channels: 3, pageHeight: 1 } }).gif({ delay: [120, 240], loop: 0 }).toBuffer();
+    configureGraphics({ protocol: "sixel", cell: { width: 10, height: 20 } });
+    try {
+      const image = await decodeImage(bytes, 4, 2);
+      expect(image.frames).toHaveLength(1);
+      expect(image.still).toBe(true);
+    } finally { configureGraphics(undefined); }
   });
 
   it("decodes distinct animated GIF frames with delays", async () => {
@@ -30,7 +64,6 @@ describe("image rendering", () => {
     const bytes = Buffer.from("AAAAJGZ0eXBoZWljAAAAAG1pZjFNaVBybWlhZk1pSEJoZWljAAABw21ldGEAAAAAAAAAIWhkbHIAAAAAAAAAAHBpY3QAAAAAAAAAAAAAAAAAAAAAJGRpbmYAAAAcZHJlZgAAAAAAAAABAAAADHVybCAAAAABAAAADnBpdG0AAAAAAAEAAAA4aWluZgAAAAAAAgAAABVpbmZlAgAAAAABAABodmMxAAAAABVpbmZlAgAAAQACAABFeGlmAAAAABppcmVmAAAAAAAAAA5jZHNjAAIAAQABAAAA5mlwcnAAAADFaXBjbwAAABNjb2xybmNseAACAAIABoAAAAAMY2xsaQDLAEAAAAAUaXNwZQAAAAAAAAAgAAAAGAAAAAlpcm90AAAAABBwaXhpAAAAAAMICAgAAABxaHZjQwEDcAAAALAAAAAAAB7wAPz9+PgAAAsDoAABABdAAQwB//8DcAAAAwCwAAADAAADAB5wJKEAAQAjQgEBA3AAAAMAsAAAAwAAAwAeoBQgQcCDCuIe5FlU3AgIGAKiAAEACUQBwGFyyERTZAAAABlpcG1hAAAAAAAAAAEAAQaBAgMFhoQAAAAsaWxvYwAAAABEAAACAAEAAAABAAACQwAAAD8AAgAAAAEAAAH3AAAATAAAAAFtZGF0AAAAAAAAAJsAAAAGRXhpZgAATU0AKgAAAAgAAwEaAAUAAAABAAAAMgEbAAUAAAABAAAAOgEoAAMAAAABAAIAAAAAAAAAAAAZAAAAAQAAABkAAAABAAAAOygBr6L6RoF8//3az//25fsv0Ao9V/+0J8j5u7L/plD3TLJn+iD5wjneHPDmc+/25UIvYV+CtwhJsiuA", "base64");
     const image = await decodeImage(bytes, 12, 8);
     expect(image.frames[0]?.ansi).toContain("▄");
-    expect((await sharp(image.frames[0]?.png).metadata()).format).toBe("png");
   });
 
   it("rejects malformed and oversized image buffers", async () => {
@@ -41,6 +74,43 @@ describe("image rendering", () => {
   it("fits both portrait and landscape images in terminal cells", () => {
     expect(imageCellSize(100, 200, 20, 10)).toEqual({ width: 10, height: 10 });
     expect(imageCellSize(200, 100, 20, 10)).toEqual({ width: 20, height: 5 });
+  });
+
+  it("converts a HEIC photo at the size it is drawn, not its own", () => {
+    const cell = { width: 10, height: 20 };
+    // A 36 x 10 cell sixel preview is 360 x 200 px; a photo of any shape fits in 360.
+    expect(previewBound({ protocol: "sixel", cell }, 36, 10)).toBe(360);
+    // The full-screen viewer at 211 x 57 is 2070 px wide.
+    expect(previewBound({ protocol: "sixel", cell }, 207, 53)).toBe(2070);
+    expect(previewBound({ protocol: "blocks", cell }, 36, 10)).toBe(256);
+    expect(previewBound({ protocol: "kitty", cell }, 36, 10)).toBe(2560);
+  });
+
+  it("keeps each HEIC conversion, by content and size, most recently used first", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "tuimsg-conversions-"));
+    try {
+      let conversions = 0;
+      const convert = (fill: number) => async () => { conversions += 1; return Buffer.alloc(1_000, fill); };
+      const photo = Buffer.from("photo one");
+      expect(await cachedConversion(photo, 360, convert(1), directory)).toEqual(Buffer.alloc(1_000, 1));
+      expect(await cachedConversion(Buffer.from("photo one"), 360, convert(9), directory)).toEqual(Buffer.alloc(1_000, 1));
+      expect(conversions).toBe(1);
+      // Another size is another conversion.
+      await cachedConversion(photo, 2070, convert(2), directory);
+      expect(conversions).toBe(2);
+      // Past the limit the least recently used go.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      await cachedConversion(photo, 360, convert(9), directory);
+      await cachedConversion(Buffer.from("photo two"), 360, convert(3), directory, 2_500);
+      expect((await readdir(directory)).filter((name) => name.endsWith(".png"))).toHaveLength(2);
+      await cachedConversion(photo, 2070, convert(4), directory, 2_500);
+      expect(conversions).toBe(4);
+      // A converter that fails leaves nothing behind.
+      await expect(cachedConversion(Buffer.from("broken"), 360, async () => { throw new Error("sips failed"); }, directory)).rejects.toThrow("sips failed");
+      expect((await readdir(directory)).some((name) => name.includes("partial"))).toBe(false);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("only selects native graphics on known terminals outside tmux", () => {
@@ -125,6 +195,14 @@ it("paints native images after Ink output and reuses transmitted data on later f
   }
 });
 
+async function until(check: () => boolean, timeout = 5_000): Promise<void> {
+  const end = Date.now() + timeout;
+  while (!check()) {
+    if (Date.now() > end) throw new Error("condition was not reached");
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+}
+
 it("loads pixels only after an inline preview enters its clipped viewport", async () => {
   const { render: renderTest } = await import("ink-testing-library");
   const { Box, Text } = await import("ink");
@@ -139,13 +217,16 @@ it("loads pixels only after an inline preview enters its clipped viewport", asyn
     await new Promise(resolve => setTimeout(resolve, 80));
     expect(loads).toBe(0);
     app.rerender(tree(0));
-    await new Promise(resolve => setTimeout(resolve, 120));
+    // Decoding takes as long as the machine needs, so wait for the pixels, not a fixed time.
+    await until(() => app.lastFrame()?.includes("▄") ?? false);
     expect(loads).toBe(1);
-    expect(app.lastFrame()).toContain("▄");
     app.rerender(createElement(Box, { flexDirection: "column" },
       createElement(Box, { height: 1, width: 10, overflow: "hidden", flexDirection: "column" }, preview),
       createElement(Text, {}, "FOOTER")));
-    await new Promise(resolve => setTimeout(resolve, 80));
+    await until(() => {
+      const [first, second] = app.lastFrame()?.split("\n") ?? [];
+      return Boolean(first?.includes("▄")) && second === "FOOTER";
+    });
     const lines = app.lastFrame()?.split("\n") ?? [];
     expect(lines[0]).toContain("▄");
     expect(lines[1]).toBe("FOOTER");

@@ -5,6 +5,7 @@ import { stripVTControlCharacters } from "node:util";
 import { App } from "../src/ui/App.tsx";
 import { emptyState, type AppState, type Chat, type Intent, type Message, type Session } from "../src/domain/model.ts";
 import { parseChatGuid, parseHandleAddress, parseMessageGuid } from "../src/domain/ids.ts";
+import { currentTheme } from "../src/ui/theme.ts";
 
 
 
@@ -20,6 +21,7 @@ const failedImageAttachment = { guid: "attachment-fail", name: "missing.png", mi
 let state: AppState = {
   ...emptyState(),
   connection: "online",
+  capabilities: { bridge: true },
   chatsStatus: "ready",
   chats: new Map([
     [firstChat, { guid: firstChat, kind: "dm", service: "iMessage", title: "Sam Rivera with a title long enough to truncate", participants: [friend], unreadCount: 2, muted: false, lastMessage: { body: "Can you bring the project notes tomorrow?", sentAt: Date.now(), isFromMe: false } }],
@@ -29,7 +31,7 @@ let state: AppState = {
     { guid: firstMessage, chatGuid: firstChat, kind: "text", from: friend, isFromMe: false, body: "Can you bring the project notes tomorrow?", attachments: [{ guid: "attachment-one", name: "sample.png", mime: "image/png", bytes: syntheticPng.byteLength }], sentAt: Date.now() - 5_000, status: "sent" },
     { guid: secondMessage, tempGuid: secondMessage, chatGuid: firstChat, kind: "text", from: me, isFromMe: true, body: "Yes, I have them ready.", attachments: [], sentAt: Date.now(), status: "uncertain" },
   ]]]),
-  history: new Map([[firstChat, { kind: "ready", next: { before: Date.now() - 5_000, offset: 2 } }]]),
+  history: new Map([[firstChat, { kind: "ready", next: { before: Date.now() - 5_000 } }]]),
   selected: null,
   listCursor: firstChat,
   input: { kind: "list" },
@@ -85,6 +87,7 @@ function apply(intent: Intent): void {
     state = { ...state, drafts: new Map(state.drafts).set(intent.chatGuid, { ...current, replyTo: intent.messageGuid }) };
   } else if (intent.type === "search-set") state = { ...state, search: intent.text };
   else if (intent.type === "select-message") state = { ...state, messageCursor: new Map(state.messageCursor).set(intent.chatGuid, intent.messageGuid) };
+  else if (intent.type === "notice") state = { ...state, notice: intent.notice };
 }
 
 const app = render(<App session={session} />);
@@ -140,7 +143,11 @@ assert.doesNotMatch(wideFrame, /[╭╮╰╯]/, "the conversation should not bo
 const incomingColumn = wideFrame.split("\n").find(line => line.includes("Can you bring the project notes tomorrow?"))?.indexOf("Can you bring");
 const outgoingColumn = wideFrame.split("\n").find(line => line.includes("Yes, I have them ready."))?.indexOf("Yes, I have");
 assert.equal(incomingColumn, outgoingColumn, "incoming and outgoing messages must share one reading lane on wide terminals");
-assert(wideFrame.split("\n").filter(line => line.includes("─")).every(line => (line.match(/─/g)?.length ?? 0) <= 100), "the reading lane must stay bounded on wide terminals");
+assert(wideFrame.split("\n").filter(line => line.includes("─")).every(line => (line.match(/─/g)?.length ?? 0) <= 84), "the reading lane must stay bounded on wide terminals");
+// The key hints end under the conversation's right edge, where the composer is.
+const hintLine = wideFrame.split("\n").at(-1) ?? "";
+const ruleLine = wideFrame.split("\n").findLast(line => line.includes("────")) ?? "";
+assert.ok(Math.abs(hintLine.trimEnd().length - ruleLine.trimEnd().length) <= 2, `the key hints must end under the conversation, not at the far edge:\n${ruleLine}\n${hintLine}`);
 
 setup.resize(100, 35);
 await setup.flush();
@@ -212,8 +219,20 @@ app.stdin.write("\x1b[200~pasted\ntext?\x1b[201~");
 await setup.flush();
 assert.ok(state.drafts.get(firstChat)?.text.endsWith("CURSOR_ENDpasted\ntext?"));
 assert.equal(intents.filter(intent => intent.type === "send").length, sendsBeforePaste, "pasted newlines must not send messages");
-session.act({ type: "draft-set", chatGuid: firstChat, text: originalDraft });
+// A draft that wraps without new lines shows whole: the composer grows a row at a time.
 setup.resize(120, 30);
+session.act({ type: "draft-set", chatGuid: firstChat, text: "" });
+await setup.flush();
+await setup.mockInput.typeText(`START ${"Long draft ".repeat(20)}FINISH`);
+await setup.flush();
+assert.match(setup.captureCharFrame(), /START[\s\S]*FINISH/, "every row of a wrapped draft must stay visible while typing");
+// Up moves the caret one wrapped row, not to the start of the line.
+setup.mockInput.pressKey("up");
+await setup.mockInput.typeText("^");
+await setup.flush();
+const caretAt = state.drafts.get(firstChat)?.text.indexOf("^") ?? -1;
+assert.ok(caretAt > 6 && caretAt < 200, `up must land in the middle of a wrapped draft, not at ${caretAt}`);
+session.act({ type: "draft-set", chatGuid: firstChat, text: originalDraft });
 await setup.flush();
 
 session.act({ type: "input", input: { kind: "help", returnTo: { kind: "composer", chatGuid: firstChat } } });
@@ -263,6 +282,17 @@ assert.equal(state.drafts.get(firstChat)?.replyTo, firstMessage);
 assert.equal(session.getSnapshot().input.kind, "composer");
 setup.mockInput.pressKey("ESCAPE");
 await delay(60);
+await setup.flush();
+// Without imsg's bridge, reply and react explain themselves instead of opening dead ends.
+state = { ...state, capabilities: { bridge: false } };
+for (const listener of listeners) listener();
+await setup.flush();
+setup.mockInput.pressKey("t");
+await setup.flush();
+assert.equal(session.getSnapshot().input.kind, "transcript");
+assert.ok(intents.some((intent) => intent.type === "notice" && intent.notice?.text.includes("imsg bridge")));
+state = { ...state, capabilities: { bridge: true } };
+for (const listener of listeners) listener();
 await setup.flush();
 setup.mockInput.pressKey("j");
 await setup.flush();
@@ -371,7 +401,7 @@ await setup.flush();
 const manualFrame = setup.captureCharFrame();
 const visibleAnchor = manualFrame.match(/Long message \d+ anchor/)?.[0];
 assert(visibleAnchor);
-state = { ...state, history: new Map(state.history).set(firstChat, { kind: "loading", request: 99, mode: "older", hasPage: true, next: { before: 1, offset: 1 } }) };
+state = { ...state, history: new Map(state.history).set(firstChat, { kind: "loading", request: 99, mode: "older", hasPage: true, next: { before: 1 } }) };
 for (const listener of listeners) listener();
 await setup.flush();
 const moreOlder: Message[] = Array.from({ length: 2 }, (_, index) => ({
@@ -411,6 +441,47 @@ await delay(10);
 await setup.flush();
 assert.doesNotMatch(setup.captureCharFrame(), /Switch older|Long message/);
 
+// Resting on the newest message, the transcript follows sends, receipts, arrivals, and typing,
+// even while j/k left the selection on a message that is now older.
+const tail: Message[] = Array.from({ length: 16 }, (_, index) => ({
+  ...(longMessages[0] as Extract<Message, { kind: "text" }>),
+  guid: parseMessageGuid(`tail-${index}`),
+  body: `Tail ${String(index).padStart(2, "0")} keeps this conversation long`,
+  sentAt: Date.now() + 1_000 + index,
+}));
+state = {
+  ...state,
+  selected: firstChat,
+  input: { kind: "transcript", chatGuid: firstChat },
+  messages: new Map(state.messages).set(firstChat, tail),
+  messageCursor: new Map(state.messageCursor).set(firstChat, tail.at(-1)!.guid),
+};
+for (const listener of listeners) listener();
+await setup.flush();
+assert.match(setup.captureCharFrame(), /Tail 15/);
+const followed: Extract<Message, { kind: "text" }> = { ...(tail[1] as Extract<Message, { kind: "text" }>), guid: parseMessageGuid("follow-sent"), from: me, isFromMe: true, body: "Follow the send", sentAt: Date.now() + 2_000, status: "sent" };
+state = { ...state, messages: new Map(state.messages).set(firstChat, [...tail, followed]) };
+for (const listener of listeners) listener();
+await setup.flush();
+assert.match(setup.captureCharFrame(), /Follow the send/, "a sent message must scroll into view");
+const delivered: Message = { ...followed, status: "delivered" };
+state = { ...state, messages: new Map(state.messages).set(firstChat, [...tail, delivered]) };
+for (const listener of listeners) listener();
+await setup.flush();
+assert.match(setup.captureCharFrame(), /Delivered/, "a receipt under the newest message must stay in view");
+const arrival: Message = { ...(tail[0] as Extract<Message, { kind: "text" }>), guid: parseMessageGuid("follow-arrival"), body: "Follow the arrival", sentAt: Date.now() + 3_000 };
+state = { ...state, messages: new Map(state.messages).set(firstChat, [...tail, delivered, arrival]) };
+for (const listener of listeners) listener();
+await setup.flush();
+assert.match(setup.captureCharFrame(), /Follow the arrival/, "an arrival must scroll into view at the bottom");
+state = { ...state, typing: new Map(state.typing).set(firstChat, true) };
+for (const listener of listeners) listener();
+await setup.flush();
+assert.match(setup.captureCharFrame(), /• • •/, "the typing indicator must stay in view at the bottom");
+state = { ...state, typing: new Map() };
+for (const listener of listeners) listener();
+await setup.flush();
+
 const manyChats: Chat[] = Array.from({ length: 18 }, (_, index) => {
   const guid = parseChatGuid(`SMS;-;list-${index}`);
   return {
@@ -441,13 +512,69 @@ for (let index = 0; index < 12; index += 1) {
 assert.equal(state.listCursor, manyChats[12]!.guid);
 assert.match(setup.captureCharFrame(), /Conversation 12 visible cursor/);
 
+// A selected message with a link offers o, which opens that link.
+const linkMessage = parseMessageGuid("message-link");
+const link = "https://www.instagram.com/reel/DOh1/?igsh=MW5";
+state = { ...state, selected: secondChat, input: { kind: "transcript", chatGuid: secondChat },
+  chats: new Map(state.chats).set(secondChat, { guid: secondChat, kind: "dm", service: "iMessage", title: "Alex", participants: [friend], unreadCount: 0, muted: false, lastMessage: { body: `Watch ${link} lol`, sentAt: Date.now(), isFromMe: false } }),
+  messages: new Map(state.messages).set(secondChat, [{ guid: linkMessage, chatGuid: secondChat, kind: "text", from: friend, isFromMe: false, body: `Watch ${link} lol`, attachments: [], sentAt: Date.now(), status: "sent" }]),
+  messageCursor: new Map(state.messageCursor).set(secondChat, linkMessage) };
+for (const listener of listeners) listener();
+setup.resize(120, 30);
+await setup.flush();
+assert.match(setup.captureCharFrame(), /o open link/, "the status bar must offer the selected message's link");
+assert.ok((app.lastFrame() ?? "").includes(`\x1b]8;;${link}\x1b\\`), "links must be OSC 8 hyperlinks for Ctrl+click");
+setup.mockInput.pressKey("o");
+await setup.flush();
+assert.ok(intents.some((intent) => intent.type === "open-link" && intent.url === link));
+assert.ok(!intents.some((intent) => intent.type === "attachment" && intent.action === "open" && intents.at(-1) === intent));
+
+// Shift+L switches the theme outside the composer, and is a plain letter inside it.
+assert.equal(currentTheme(), "dark");
+setup.mockInput.pressKey("L");
+await setup.flush();
+assert.equal(currentTheme(), "light");
+assert.ok(intents.some((intent) => intent.type === "notice" && intent.notice?.text.startsWith("Light mode")));
+setup.mockInput.pressKey("L");
+await setup.flush();
+assert.equal(currentTheme(), "dark");
+state = { ...state, input: { kind: "composer", chatGuid: secondChat } };
+for (const listener of listeners) listener();
+await setup.flush();
+setup.mockInput.pressKey("L");
+await setup.flush();
+assert.equal(currentTheme(), "dark");
+assert.equal(state.drafts.get(secondChat)?.text, "L");
+
+// A notice gives the key hints back at the next key, except the one explaining missing access.
+state = { ...state, input: { kind: "transcript", chatGuid: secondChat } };
+for (const listener of listeners) listener();
+session.act({ type: "notice", notice: { kind: "info", text: "Saved at /tmp/photo.png" } });
+await setup.flush();
+assert.match(setup.captureCharFrame(), /Saved at \/tmp\/photo\.png/);
+assert.doesNotMatch(setup.captureCharFrame(), /o open link/);
+setup.mockInput.pressKey("j");
+await setup.flush();
+assert.equal(state.notice, null);
+assert.match(setup.captureCharFrame(), /o open link/, "the key hints must come back at the next key");
+// Missing access is explained where the conversation goes, and stays there through keys.
+state = { ...state, connection: "no-access", unavailable: "Cannot read the Messages database.", selected: null, input: { kind: "list" } };
+for (const listener of listeners) listener();
+session.act({ type: "notice", notice: { kind: "info", text: "Light mode · Shift+L for dark" } });
+setup.mockInput.pressKey("j");
+await setup.flush();
+assert.equal(state.notice, null);
+assert.match(setup.captureCharFrame(), /Messages is not available[\s\S]*Cannot read the Messages database\./);
+state = { ...state, connection: "online", unavailable: null, selected: secondChat, input: { kind: "search", returnTo: { kind: "transcript", chatGuid: secondChat } } };
+for (const listener of listeners) listener();
+
 setup.resize(50, 16);
 session.act({ type: "input", input: { kind: "help", returnTo: { kind: "list" } } });
 await setup.flush();
 frame = setup.captureCharFrame();
 saveFrame("narrow-help-50x16.txt", frame);
 assert.match(frame, /Keyboard shortcuts/);
-assert.match(frame, /q quit/);
+assert.match(frame, /q\s+quit/);
 session.act({ type: "input", input: { kind: "new-chat", addresses: "", text: "", service: "iMessage", field: "addresses", busy: false, error: null } });
 await setup.flush();
 frame = setup.captureCharFrame();
@@ -476,6 +603,35 @@ for (const [width, height, expected] of [[80, 24, "Messages"], [50, 16, "Message
   saveFrame(`frame-${width}x${height}.txt`, frame);
   assert.match(frame, new RegExp(expected));
 }
+
+// Over SSH, keys typed quickly can arrive in one read. Each is still a command, text after
+// one that opens a field is typed into it, and a wheel sequence is never taken apart.
+setup.resize(120, 30);
+const openChat = [...state.chats.keys()][0]!;
+state = { ...state, input: { kind: "list" }, listCursor: openChat };
+for (const listener of listeners) listener();
+await setup.flush();
+app.stdin.write("jj");
+await setup.flush();
+assert.deepEqual(intents.slice(-2).map((intent) => intent.type), ["move-list", "move-list"], "two j's in one read must move twice");
+state = { ...state, selected: openChat, input: { kind: "transcript", chatGuid: openChat }, drafts: new Map(state.drafts).set(openChat, { text: "", replyTo: null }) };
+for (const listener of listeners) listener();
+await setup.flush();
+const intentsBeforeTyping = intents.length;
+app.stdin.write("iquick note\r");
+await setup.flush();
+assert.equal(session.getSnapshot().input.kind, "composer", "i must open the composer when text follows it in the same read");
+assert.equal(state.drafts.get(openChat)?.text, "quick note", "the text after i must land in the draft");
+assert.ok(!intents.slice(intentsBeforeTyping).some((intent) => intent.type === "send"), "an Enter that came with the text must not send it");
+assert.match(setup.captureCharFrame(), /› quick note/);
+state = { ...state, input: { kind: "tapback", chatGuid: openChat, messageGuid: firstMessage, choice: 0 } };
+for (const listener of listeners) listener();
+await setup.flush();
+const intentsBeforeWheel = intents.length;
+await setup.mockMouse.scroll(60, 10, "down");
+await setup.flush();
+assert.deepEqual(session.getSnapshot().input, { kind: "tapback", chatGuid: openChat, messageGuid: firstMessage, choice: 0 }, "a wheel sequence must not pick a reaction");
+assert.ok(intents.slice(intentsBeforeWheel).every((intent) => intent.type === "notice"), "a wheel sequence must not act as keys");
 
 state = { ...state, input: { kind: "composer", chatGuid: firstChat } };
 for (const listener of listeners) listener();

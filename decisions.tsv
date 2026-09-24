@@ -4,3 +4,7 @@ ts	phase	decision	why	evidence	result
 2026-09-04T18:20:00Z	domain	message sum type plus reducer	illegal combos must not compile, UI is a projection	src/domain/model.ts	tests green
 2026-09-04T18:40:00Z	bb	in-process fake HTTP+socket.io	tests and --fake must not need a live Mac	src/bb/fake.ts	17 tests green
 2026-09-04T19:00:00Z	ui	comfortable two-pane, skip scratch variants	Messages chrome is list plus transcript plus composer	imsg --fake frame contains Messages	verified
+2026-09-24T15:20:00Z	backend	openclaw imsg rpc over BlueBubbles	runs on the Mac over SSH with no server, password, or keychain; ROWID watch resume and exclusive history bounds avoid BlueBubbles pagination gaps	src/imsg/, test/imsg/	tests green, pty smoke green
+2026-09-24T15:20:00Z	bin	command renamed tuimsg	imsg is the name of the CLI it drives; the same name could spawn itself	package.json bin	picked
+2026-09-24T16:40:00Z	images	sixel strips per cell row, repainted from Ink's write stream	Windows Terminal has sixel but no kitty graphics; text written over a cell erases its image, and Ink rewrites whole lines	test/sixel-app.test.ts, scripts/image-smoke.ts	tests green, pty smoke green
+2026-09-24T16:40:00Z	service	chat service from the GUID prefix, else the newest message	merged any;-; chats keep a stale service_name; message.send_status reports each row's service	test/session/session.test.ts	tests green
