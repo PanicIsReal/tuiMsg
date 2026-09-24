@@ -70,13 +70,15 @@ Without the bridge, those keys explain what is missing instead of failing later.
 
 ## Reading the screen
 
-Conversations are on the left; the newest is at the top, a blue dot marks unread ones, and SMS conversations are tagged in green. Every message hangs off a bar on its left: blue for yours, gray for theirs, and a steady color for each person in a group. A run of messages from one person shares one bar. The selected message's bar turns solid, and reactions sit at the right of the message they react to. Under your newest message, one line follows it from *Sending…* to Sent, Delivered, and Read. The bottom line shows the keys for whatever has focus, starting with what the selected message offers, such as `o open link`; `?` lists them all. Messages such as "Copied." or where an attachment was saved take its place for five seconds (errors for ten), or until the next key.
+Conversations are on the left; the newest is at the top, a blue dot marks unread ones, and SMS conversations are tagged in green. On a wide terminal the conversation stays a centred column about 80 characters wide, the length a line is easiest to read at, with its key hints beneath it. Every message hangs off a bar on its left: blue for yours, gray for theirs, and a steady color for each person in a group. A run of messages from one person shares one bar. The selected message's bar turns solid, and reactions sit at the right of the message they react to. Under your newest message, one line follows it from *Sending…* to Sent, Delivered, and Read. The bottom line shows the keys for whatever has focus, starting with what the selected message offers, such as `o open link`; `?` lists them all. Messages such as "Copied." or where an attachment was saved take its place for five seconds (errors for ten), or until the next key.
 
 ## Light and dark
 
 Press `Shift+L` outside the composer to switch between a light and a dark theme. The choice is saved in `~/.config/tuimsg/settings.json` (under `TUIMSG_HOME` when set). Until you choose, `tuimsg` asks the terminal for its background color at startup and matches it, falling back to dark when the terminal does not answer. `TUIMSG_THEME=light`, `dark`, or `auto` overrides the saved choice.
 
 Both themes use the xterm 256-color palette, so an SSH session without truecolor draws exactly the same colors as a local one.
+
+The font is the terminal's own. In Windows Terminal, set it under Settings, then your profile, then Appearance: Cascadia Mono (the default) and JetBrains Mono are both designed for reading on screen. Font size, weight, line height, and text antialiasing are also set there. Pictures follow the cell size the terminal reports, so they stay in proportion with any font.
 
 While `tuimsg` runs, the terminal's own default colors follow the theme (OSC 10 and 11). Terminals paint their padding, and the strip left over when a window is not a whole number of rows and columns, in that default color rather than the app's, so without this a light theme would sit in a black frame. Quitting restores the colors the terminal reported at startup, then asks it to return to its profile's colors (OSC 110 and 111). If the SSH connection drops first, that tab keeps the theme's colors until you run `tuimsg` again and quit, or open a new tab.
 

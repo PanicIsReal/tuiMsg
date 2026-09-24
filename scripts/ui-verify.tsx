@@ -143,7 +143,11 @@ assert.doesNotMatch(wideFrame, /[╭╮╰╯]/, "the conversation should not bo
 const incomingColumn = wideFrame.split("\n").find(line => line.includes("Can you bring the project notes tomorrow?"))?.indexOf("Can you bring");
 const outgoingColumn = wideFrame.split("\n").find(line => line.includes("Yes, I have them ready."))?.indexOf("Yes, I have");
 assert.equal(incomingColumn, outgoingColumn, "incoming and outgoing messages must share one reading lane on wide terminals");
-assert(wideFrame.split("\n").filter(line => line.includes("─")).every(line => (line.match(/─/g)?.length ?? 0) <= 100), "the reading lane must stay bounded on wide terminals");
+assert(wideFrame.split("\n").filter(line => line.includes("─")).every(line => (line.match(/─/g)?.length ?? 0) <= 84), "the reading lane must stay bounded on wide terminals");
+// The key hints end under the conversation's right edge, where the composer is.
+const hintLine = wideFrame.split("\n").at(-1) ?? "";
+const ruleLine = wideFrame.split("\n").findLast(line => line.includes("────")) ?? "";
+assert.ok(Math.abs(hintLine.trimEnd().length - ruleLine.trimEnd().length) <= 2, `the key hints must end under the conversation, not at the far edge:\n${ruleLine}\n${hintLine}`);
 
 setup.resize(100, 35);
 await setup.flush();

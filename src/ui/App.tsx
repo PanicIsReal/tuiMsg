@@ -17,6 +17,7 @@ import { firstLink } from "../domain/links.ts";
 import { cleanText } from "../domain/text.ts";
 
 const REACTIONS: Reaction[] = ["love", "like", "dislike", "laugh", "emphasize", "question"];
+const LANE_WIDTH = 84;
 export type AppProps = { session: Session };
 
 export function App(props: AppProps) {
@@ -73,7 +74,11 @@ function AppContent({ session }: AppProps) {
   const showConversation = !narrow || !showList;
   const listWidth = narrow ? size.width : Math.min(34, Math.max(27, Math.floor(size.width * 0.28)));
   const conversationWidth = narrow ? size.width : size.width - listWidth;
-  const laneWidth = Math.min(100, conversationWidth);
+  // The conversation reads as one column of about 80 characters, the length a line of text
+  // is easiest to follow at; wider terminals leave the space around it.
+  const laneWidth = Math.min(LANE_WIDTH, conversationWidth);
+  // The key hints end where the conversation does, under the composer, not at the far edge.
+  const laneRight = narrow ? size.width : listWidth + Math.round((conversationWidth - laneWidth) / 2) + laneWidth;
   // A long draft grows the composer to about a third of the screen, then scrolls.
   const composerRows = Math.max(3, Math.min(10, Math.floor(size.height / 3)));
   const history = selected ? state.history.get(selected.guid) ?? { kind: "unloaded" as const } : { kind: "unloaded" as const };
@@ -126,7 +131,7 @@ function AppContent({ session }: AppProps) {
           </Box>
         ) : null}
       </Box>
-      <StatusBar state={state} narrow={narrow} width={size.width} selected={selected ? selectedMessage(state.messageCursor.get(selected.guid), messages) : undefined} />
+      <StatusBar state={state} narrow={narrow} width={size.width} inset={size.width - laneRight} selected={selected ? selectedMessage(state.messageCursor.get(selected.guid), messages) : undefined} />
       <Overlay input={input} state={state} messages={messages} session={session} width={size.width} height={size.height} />
     </Box>
   );
@@ -342,7 +347,7 @@ const HINTS: Record<string, [string, string][]> = {
   image: [["o", "open"], ["s", "save"], ["esc", "close"]],
 };
 
-function StatusBar(props: { state: ReturnType<Session["getSnapshot"]>; narrow: boolean; width: number; selected?: Message | undefined }) {
+function StatusBar(props: { state: ReturnType<Session["getSnapshot"]>; narrow: boolean; width: number; inset: number; selected?: Message | undefined }) {
   const { connection, notice, input } = props.state;
   const connectionColor = connection === "online" ? colors.sms : connection === "no-access" ? colors.failed : colors.warning;
   const hints = [...(HINTS[input.kind] ?? [])];
@@ -352,7 +357,7 @@ function StatusBar(props: { state: ReturnType<Session["getSnapshot"]>; narrow: b
     const offer: [string, string] | undefined = firstLink(message.body) ? ["o", "open link"] : message.attachments.some(isImageAttachment) ? ["v", "view"] : message.attachments.length ? ["o", "open"] : undefined;
     if (offer) hints.splice(1, 0, offer);
   }
-  const room = Math.max(0, props.width - 24);
+  const room = Math.max(0, props.width - props.inset - 24);
   const shown: [string, string][] = [];
   let used = 0;
   for (const hint of props.narrow ? hints.slice(0, 3) : hints) {
@@ -361,7 +366,7 @@ function StatusBar(props: { state: ReturnType<Session["getSnapshot"]>; narrow: b
     shown.push(hint);
   }
   return (
-    <Box height={1} paddingLeft={2} paddingRight={2} flexDirection="row" justifyContent="space-between" backgroundColor={colors.sidebar}>
+    <Box height={1} paddingLeft={2} paddingRight={2 + props.inset} flexDirection="row" justifyContent="space-between" backgroundColor={colors.sidebar}>
       <Text wrap="truncate-end"><Text color={connectionColor}>●</Text><Text color={colors.subtle}> {CONNECTION_LABELS[connection]}{bridgeAvailable(props.state.capabilities) && !props.narrow ? " · bridge" : ""}</Text></Text>
       {notice
         ? <Text wrap="truncate-end" color={notice.kind === "error" ? colors.failed : colors.secondary}>{notice.text}</Text>
