@@ -115,10 +115,13 @@ export class Benchmark {
     this.count("sixel bytes", bytes);
   }
 
-  // Every byte written to the terminal.
-  sent(bytes: number): void {
+  // Every byte written to the terminal, and how long the write held the program: a write to
+  // a terminal can wait for the SSH link to take it.
+  sent(bytes: number, elapsed = 0): void {
     const now = performance.now();
     this.count("sent", bytes);
+    this.add("write", elapsed);
+    if (elapsed > 20) this.note(`write · ${size(bytes)} held the program for ${ms(elapsed)}`, now - elapsed);
     if (now - this.window.start >= 1_000) {
       this.window = { start: now, bytes: 0 };
     }
@@ -223,7 +226,11 @@ export class Benchmark {
     block("slowest keys", this.slowest.map((key) => `${ms(key.ms).padStart(9)}  ${key.label} at ${(key.at / 1000).toFixed(3)} s`));
 
     block("frames", [`${total("frames")} · Ink render ${spread(this.series.get("ink") ?? [])}`, `diff ${spread(this.series.get("diff") ?? [])} · ${total("whole redraws")} whole redraws`]);
-    block("terminal output", [`${size(total("sent"))} · frames ${size(total("frame bytes"))} · sixel ${size(total("sixel bytes"))} · busiest second ${size(total("busiest second"))}`]);
+    const writes = this.series.get("write") ?? [];
+    block("terminal output", [
+      `${size(total("sent"))} · frames ${size(total("frame bytes"))} · sixel ${size(total("sixel bytes"))} · busiest second ${size(total("busiest second"))}`,
+      `writes ${spread(writes)} · ${writes.filter((value) => value > 20).length} held the program over 20 ms`,
+    ]);
 
     const requests = this.grouped("imsg").sort((a, b) => sum(b.values) - sum(a.values));
     const problems = ["timed out", "failed", "error"].filter((outcome) => total(`imsg ${outcome}`)).map((outcome) => `${total(`imsg ${outcome}`)} ${outcome}`);
@@ -304,8 +311,10 @@ export function instrument(stdin: NodeJS.ReadStream, stdout: NodeJS.WriteStream,
   }) as typeof stdin.read;
   const write = stdout.write;
   stdout.write = function (this: NodeJS.WriteStream, chunk: string | Uint8Array, ...rest: unknown[]) {
-    benchmark.sent(typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.byteLength);
-    return Reflect.apply(write, this, [chunk, ...rest]) as boolean;
+    const began = performance.now();
+    const result = Reflect.apply(write, this, [chunk, ...rest]) as boolean;
+    benchmark.sent(typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.byteLength, performance.now() - began);
+    return result;
   } as typeof stdout.write;
   stdout.on("resize", () => benchmark.note(`resize · ${stdout.columns}×${stdout.rows}`));
 

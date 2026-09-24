@@ -66,11 +66,14 @@ describe("a benchmark log", () => {
       benchmark.diffed(0.5, 480, false);
       benchmark.flushed(512, true);
       benchmark.request("messages.history", 120, 4_096);
+      benchmark.sent(160_000, 150);
       benchmark.request("send", 30_000, 0, "timed out");
     });
     expect(text).toMatch(/^header line\n/);
     expect(text).toMatch(/key j · list · on screen [\d.]+ ms · handled [\d.]+ ms · Ink 4\.0 ms · diff 0\.50 ms · 512 B/);
     expect(text).toContain("imsg messages.history · 120 ms · 4.0 KB");
+    expect(text).toContain("write · 156.3 KB held the program for 150 ms");
+    expect(text).toMatch(/writes 150 ms · 1 held the program over 20 ms/);
     expect(text).toContain("imsg send · 30.00 s · 0 B · timed out");
     expect(text).toContain("end · quit");
     expect(text).toMatch(/keys → screen\s+1 keys/);
