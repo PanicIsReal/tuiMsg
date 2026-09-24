@@ -122,7 +122,7 @@ If imsg exits, `tuimsg` restarts it and resumes from the last message it saw, so
 
 Received photos appear inline with their messages. Press `v` on an image message for a larger view, or `a` to choose among all its attachments. Press `o` to open the original or `s` to save it.
 
-PNG, JPEG, WebP, and GIF previews decode locally. GIFs animate while visible. HEIC photos use the macOS image converter when the bundled decoder cannot read them. Attachments that Messages keeps only in iCloud show as not downloaded; open them once in Messages on the Mac. An unsupported or corrupt preview keeps the original available to open or save.
+PNG, JPEG, WebP, and GIF previews decode locally. GIFs animate while visible. HEIC photos use the macOS image converter (`sips`) when the bundled decoder cannot read them, at the size they are drawn. Each conversion is kept in `~/Library/Caches/tuimsg/previews`, up to 200 MB, so a photo seen once shows at once from then on, including after a restart. Delete that folder to clear it. Attachments that Messages keeps only in iCloud show as not downloaded; open them once in Messages on the Mac. An unsupported or corrupt preview keeps the original available to open or save.
 
 How a photo is drawn depends on the terminal:
 
@@ -151,7 +151,7 @@ The log records:
 - **Every key**, from when it was read to when its update left for the terminal. It also records the time taken to handle the key, the time Ink took to render the frame, the time the cell diff took, and the bytes sent. Keys that changed nothing on screen are listed as such.
 - **Every imsg request and event**, with its time and size, and any timeouts or failures.
 - **Pictures and attachments**, with their load and decode times and sixel sizes.
-- **Terminal writes** that hold the program for over 20 ms, as a large write can while the SSH link catches up.
+- **Terminal writes** that hold the program for over 20 ms, as a large write can while the SSH link catches up, and the bytes each picture cost: drawn new, redrawn after moving, or resent under rewritten cells.
 - **Event-loop stalls** over 100 ms, memory each minute, and a summary with medians, 95th percentiles, and the slowest keys.
 
 It holds timings, sizes, and counts only. It never records message text, names, phone numbers, or addresses. Keys typed into the composer, search, or new-conversation fields are logged only as `typing`. Elsewhere, only keys that are commands are named; any other key is logged as `other`, so a message typed before the composer was open stays out. Notices are logged by kind, not text. If the app crashes, the error message is included with the home directory, addresses, and numbers removed. The log shows the machine's CPU, the OS version, the terminal's `TERM`, `TERM_PROGRAM`, and `COLORTERM` settings, and the git commit being run. Read it before sharing.

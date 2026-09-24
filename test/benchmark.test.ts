@@ -71,6 +71,8 @@ describe("a benchmark log", () => {
       benchmark.flushed(512, true);
       benchmark.request("messages.history", 120, 4_096);
       benchmark.sent(160_000, 150);
+      benchmark.sixel(100_000, "new");
+      benchmark.sixel(60_000, "moved");
       benchmark.request("send", 30_000, 0, "timed out");
     });
     expect(text).toMatch(/^header line\n/);
@@ -78,6 +80,7 @@ describe("a benchmark log", () => {
     expect(text).toContain("imsg messages.history · 120 ms · 4.0 KB");
     expect(text).toContain("write · 156.3 KB held the program for 150 ms");
     expect(text).toMatch(/writes 150 ms · 1 held the program over 20 ms/);
+    expect(text).toContain("sixel: new pictures 97.7 KB · redrawn after moving 58.6 KB · under rewritten cells 0 B");
     expect(text).toContain("imsg send · 30.00 s · 0 B · timed out");
     expect(text).toContain("end · quit");
     expect(text).toMatch(/keys → screen\s+1 keys/);
@@ -97,6 +100,18 @@ describe("a benchmark log", () => {
     expect(text).toMatch(/key wheel down · transcript · handled [\d.]+ ms · no change on screen/);
     expect(text).toMatch(/key i · transcript · on screen/);
     expect(text).toMatch(/1 changed nothing on screen/);
+  });
+
+  it("does not credit a key that changed nothing with a frame from something else", () => {
+    const text = run((benchmark) => {
+      benchmark.input("k", "list");
+      benchmark.input(null, "list");
+      const until = performance.now() + 160;
+      while (performance.now() < until) { /* previews arrive a while later and redraw */ }
+      benchmark.flushed(4_000, true);
+    });
+    expect(text).toMatch(/key k · list · handled [\d.]+ ms · no change on screen/);
+    expect(text).not.toMatch(/key k · list · on screen/);
   });
 
   it("keeps what was typed out, and marks F12", () => {

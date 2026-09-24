@@ -14,11 +14,12 @@ type Key = { label: string; at: number; handled?: number };
 type Picture = { width: number; height: number; columns: number; rows: number; protocol: string; ms: number; bytes: number; sixel: number };
 
 const TEXT_FIELDS = new Set<InputMode["kind"]>(["composer", "search", "new-chat"]);
-// A key whose update has not reached the screen by then changed nothing there.
-const KEY_EXPIRY_MS = 1_000;
-// Ink holds a frame back at most this long (30 frames a second), so a key still waiting when
-// a later one arrives this much after it changed nothing, and the later key's frame is not
-// its own.
+// Once a key is handled, its frame follows within Ink's frame interval (34 ms) or its wait
+// for the rest of an escape sequence. A frame later than this is not the key's: it changed
+// nothing, and the frame came from something else, such as previews arriving.
+const KEY_FRAME_MS = 150;
+// Sooner than that, a later key arriving this long after the first was handled shows the
+// first changed nothing.
 const FRAME_HOLD_MS = 50;
 const LAG_INTERVAL_MS = 100;
 const STALL_MS = 100;
@@ -111,8 +112,11 @@ export class Benchmark {
     this.frame.diff = ms;
   }
 
-  sixel(bytes: number): void {
+  // Why a picture was sent: drawn for the first time, redrawn where it came to rest after
+  // moving, or resent under cells a frame rewrote.
+  sixel(bytes: number, reason: "new" | "moved" | "rewritten"): void {
     this.count("sixel bytes", bytes);
+    this.count(`sixel\u0000${reason}`, bytes);
   }
 
   // Every byte written to the terminal, and how long the write held the program: a write to
@@ -138,6 +142,7 @@ export class Benchmark {
     if (this.reached("first frame")) this.note("first frame on screen");
     const { ink, diff } = this.frame;
     this.frame = { ink: 0, diff: 0 };
+    this.expire(KEY_FRAME_MS);
     if (!this.waiting.length) {
       if (ink + diff > 20 || bytes > 16_384) this.note(`frame · Ink ${ms(ink)} · diff ${ms(diff)} · ${size(bytes)}`);
       return;
@@ -195,7 +200,7 @@ export class Benchmark {
     if (!this.on || this.finished) return;
     this.finished = true;
     for (const timer of this.timers) clearInterval(timer);
-    this.expire(Number.POSITIVE_INFINITY);
+    this.expire(0);
     this.sample();
     this.note(`end · ${reason}`);
     this.flush();
@@ -229,6 +234,7 @@ export class Benchmark {
     const writes = this.series.get("write") ?? [];
     block("terminal output", [
       `${size(total("sent"))} · frames ${size(total("frame bytes"))} · sixel ${size(total("sixel bytes"))} · busiest second ${size(total("busiest second"))}`,
+      `sixel: new pictures ${size(total("sixel\u0000new"))} · redrawn after moving ${size(total("sixel\u0000moved"))} · under rewritten cells ${size(total("sixel\u0000rewritten"))}`,
       `writes ${spread(writes)} · ${writes.filter((value) => value > 20).length} held the program over 20 ms`,
     ]);
 
@@ -266,14 +272,16 @@ export class Benchmark {
     this.expected = now + LAG_INTERVAL_MS;
     this.add("lag", lag);
     if (lag > STALL_MS) this.note(`stall · the event loop was blocked for at least ${ms(lag)}`, now - lag);
-    this.expire(KEY_EXPIRY_MS);
+    this.expire(KEY_FRAME_MS);
   }
 
+  // Keys handled at least `age` ago that are still waiting changed nothing on screen.
   private expire(age: number): void {
     const now = performance.now();
-    const stale = this.waiting.filter((key) => now - key.at >= age);
+    const idle = (key: Key) => now - (key.at + (key.handled ?? 0));
+    const stale = this.waiting.filter((key) => idle(key) >= age);
     if (!stale.length) return;
-    this.waiting = this.waiting.filter((key) => now - key.at < age);
+    this.waiting = this.waiting.filter((key) => idle(key) < age);
     for (const key of stale) {
       this.count("keys without a change");
       this.note(`key ${key.label} · handled ${ms(key.handled ?? 0)} · no change on screen`, key.at);
