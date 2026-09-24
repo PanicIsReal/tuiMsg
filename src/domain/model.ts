@@ -16,6 +16,9 @@ export type Chat = {
   guid: ChatGuid; kind: ChatKind; service: Service; title: string; participants: Handle[];
   lastMessage?: MessagePreview; unreadCount: number; muted: boolean; provisional?: boolean;
   rowId?: number; lastActivityAt?: number;
+  // Set when `service` was read from the message sent at this time rather than from the
+  // chat row, whose stored service goes stale on merged (any;) conversations.
+  serviceAt?: number;
 };
 type MessageBase = { guid: MessageGuid; chatGuid: ChatGuid; sentAt: number };
 export type TextMessage = MessageBase & {
@@ -91,6 +94,7 @@ export type AppEvent = Intent
   | { type: "chats-loaded"; chats: Chat[] }
   | { type: "chats-status"; status: AppState["chatsStatus"] }
   | { type: "chat-preview"; chatGuid: ChatGuid; message: Message }
+  | { type: "chat-service"; chatGuid: ChatGuid; service: Service; at: number }
   | { type: "contacts-loaded"; contacts: Contact[] }
   | { type: "history-loading"; chatGuid: ChatGuid; request: number; mode: PageMode }
   | { type: "history-loaded"; chatGuid: ChatGuid; request: number; page: MessagePage }
@@ -139,4 +143,13 @@ export function bridgeAvailable(capabilities: Capabilities): boolean {
 }
 export function chatActivity(chat: Chat): number {
   return Math.max(chat.lastMessage?.sentAt ?? 0, chat.lastActivityAt ?? 0);
+}
+// Only a service-specific chat GUID settles the service; merged conversations (any;-;…)
+// and anything unrecognised can carry either, message by message.
+export function serviceOfChatGuid(guid: string): Service | undefined {
+  const separator = guid.indexOf(";");
+  const prefix = separator > 0 ? guid.slice(0, separator).toLowerCase() : "";
+  if (prefix === "imessage") return "iMessage";
+  if (prefix === "sms" || prefix === "rcs") return "SMS";
+  return undefined;
 }

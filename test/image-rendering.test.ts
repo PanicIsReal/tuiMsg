@@ -2,19 +2,50 @@ import { describe, expect, it } from "vitest";
 import sharp from "sharp";
 import { createElement } from "react";
 import { render } from "ink";
-import { decodeImage, deleteKittyImage, imageCellSize, kittyImage, supportsNativeImages, registerImage, repaintImages, cleanupImages } from "../src/image-rendering.ts";
+import { configureGraphics, decodeImage, deleteKittyImage, imageCellSize, kittyImage, supportsNativeImages, registerImage, repaintImages, cleanupImages } from "../src/image-rendering.ts";
 
 describe("image rendering", () => {
-  it.each(["png", "jpeg", "webp", "gif"] as const)("decodes real %s bytes into colored pixels and native PNG", async format => {
+  it.each(["png", "jpeg", "webp", "gif"] as const)("decodes real %s bytes into colored pixels, and a PNG for kitty", async format => {
     const bytes = await sharp({ create: { width: 12, height: 8, channels: 3, background: "#ff3300" } }).toFormat(format).toBuffer();
     const result = await decodeImage(bytes, 6, 4);
     expect(result.frames).toHaveLength(1);
     expect(result.frames[0]?.ansi).toContain("▄");
     expect(result.frames[0]?.ansi).toContain("\x1b[48;2;");
     expect(result.frames[0]?.ansi).not.toContain("undefined");
-    expect((await sharp(result.frames[0]?.png).metadata()).format).toBe("png");
+    expect(result.frames[0]?.png).toBeUndefined();
     expect(result.width).toBeLessThanOrEqual(6);
     expect(result.height).toBeLessThanOrEqual(4);
+    configureGraphics({ protocol: "kitty", cell: { width: 10, height: 20 } });
+    try {
+      const native = await decodeImage(bytes, 6, 4);
+      expect((await sharp(native.frames[0]?.png).metadata()).format).toBe("png");
+    } finally { configureGraphics(undefined); }
+  });
+
+  it("cuts a sixel into one strip per cell row, sized to cover its placeholder", async () => {
+    const bytes = await sharp({ create: { width: 300, height: 200, channels: 3, background: "#3366cc" } }).png().toBuffer();
+    configureGraphics({ protocol: "sixel", cell: { width: 10, height: 20 } });
+    try {
+      const image = await decodeImage(bytes, 48, 10);
+      // 300×200 on 10×20 cells: 30 columns by 10 rows, at 300×200 pixels.
+      expect([image.width, image.height]).toEqual([30, 10]);
+      const strips = image.frames[0]?.sixel ?? [];
+      expect(strips).toHaveLength(10);
+      for (const strip of strips) expect(strip).toMatch(/^\x1bP0;1;0q"1;1;300;20#/);
+      expect(image.frames[0]?.ansi.split("\n")).toHaveLength(10);
+      expect(image.frames[0]?.png).toBeUndefined();
+    } finally { configureGraphics(undefined); }
+  });
+
+  it("keeps an animation on its first frame for sixel, which is resent on every redraw", async () => {
+    const data = Buffer.concat([Buffer.from([255, 0, 0, 255, 0, 0]), Buffer.from([0, 0, 255, 0, 0, 255])]);
+    const bytes = await sharp(data, { raw: { width: 2, height: 2, channels: 3, pageHeight: 1 } }).gif({ delay: [120, 240], loop: 0 }).toBuffer();
+    configureGraphics({ protocol: "sixel", cell: { width: 10, height: 20 } });
+    try {
+      const image = await decodeImage(bytes, 4, 2);
+      expect(image.frames).toHaveLength(1);
+      expect(image.still).toBe(true);
+    } finally { configureGraphics(undefined); }
   });
 
   it("decodes distinct animated GIF frames with delays", async () => {
@@ -30,7 +61,6 @@ describe("image rendering", () => {
     const bytes = Buffer.from("AAAAJGZ0eXBoZWljAAAAAG1pZjFNaVBybWlhZk1pSEJoZWljAAABw21ldGEAAAAAAAAAIWhkbHIAAAAAAAAAAHBpY3QAAAAAAAAAAAAAAAAAAAAAJGRpbmYAAAAcZHJlZgAAAAAAAAABAAAADHVybCAAAAABAAAADnBpdG0AAAAAAAEAAAA4aWluZgAAAAAAAgAAABVpbmZlAgAAAAABAABodmMxAAAAABVpbmZlAgAAAQACAABFeGlmAAAAABppcmVmAAAAAAAAAA5jZHNjAAIAAQABAAAA5mlwcnAAAADFaXBjbwAAABNjb2xybmNseAACAAIABoAAAAAMY2xsaQDLAEAAAAAUaXNwZQAAAAAAAAAgAAAAGAAAAAlpcm90AAAAABBwaXhpAAAAAAMICAgAAABxaHZjQwEDcAAAALAAAAAAAB7wAPz9+PgAAAsDoAABABdAAQwB//8DcAAAAwCwAAADAAADAB5wJKEAAQAjQgEBA3AAAAMAsAAAAwAAAwAeoBQgQcCDCuIe5FlU3AgIGAKiAAEACUQBwGFyyERTZAAAABlpcG1hAAAAAAAAAAEAAQaBAgMFhoQAAAAsaWxvYwAAAABEAAACAAEAAAABAAACQwAAAD8AAgAAAAEAAAH3AAAATAAAAAFtZGF0AAAAAAAAAJsAAAAGRXhpZgAATU0AKgAAAAgAAwEaAAUAAAABAAAAMgEbAAUAAAABAAAAOgEoAAMAAAABAAIAAAAAAAAAAAAZAAAAAQAAABkAAAABAAAAOygBr6L6RoF8//3az//25fsv0Ao9V/+0J8j5u7L/plD3TLJn+iD5wjneHPDmc+/25UIvYV+CtwhJsiuA", "base64");
     const image = await decodeImage(bytes, 12, 8);
     expect(image.frames[0]?.ansi).toContain("▄");
-    expect((await sharp(image.frames[0]?.png).metadata()).format).toBe("png");
   });
 
   it("rejects malformed and oversized image buffers", async () => {

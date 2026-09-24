@@ -21,7 +21,7 @@ export function Transcript(props: TranscriptProps) {
   const content = useRef<DOMElement>(null);
   const elements = useRef(new Map<MessageGuid, DOMElement>());
   const [scroll, setScroll] = useState(0);
-  const previous = useRef<{ chat: ChatGuid; cursor: MessageGuid | null; offset: number; height: number; width: number } | null>(null);
+  const previous = useRef<{ chat: ChatGuid; cursor: MessageGuid | null; offset: number; height: number; width: number; maximum: number } | null>(null);
   const rows = foldTapbacks(props.messages);
   const lastOwn = lastOwnReceipt(props.messages);
   const selected = props.cursor ?? props.messages.findLast(message => message.kind !== "tapback")?.guid ?? null;
@@ -43,17 +43,20 @@ export function Transcript(props: TranscriptProps) {
     const top = node?.getComputedTop() ?? 0;
     const height = node?.getComputedHeight() ?? 0;
     const saved = previous.current;
+    const bottom = maximum();
     setScroll(current => {
-      if (!saved || saved.chat !== props.chatGuid) return maximum();
+      if (!saved || saved.chat !== props.chatGuid) return bottom;
       if (saved.cursor !== selected || saved.width !== props.width) {
-        if (height >= viewportHeight || top < current) return Math.min(maximum(), top);
-        if (top + height > current + viewportHeight) return Math.min(maximum(), top + height - viewportHeight);
+        if (height >= viewportHeight || top < current) return Math.min(bottom, top);
+        if (top + height > current + viewportHeight) return Math.min(bottom, top + height - viewportHeight);
       }
-      if (saved.cursor === selected && saved.offset !== top) return Math.min(maximum(), Math.max(0, current + top - saved.offset));
-      return Math.min(maximum(), current);
+      // Resting on the newest message, the view follows new messages and receipts.
+      if (current >= saved.maximum) return bottom;
+      if (saved.cursor === selected && saved.offset !== top) return Math.min(bottom, Math.max(0, current + top - saved.offset));
+      return Math.min(bottom, current);
     });
-    previous.current = { chat: props.chatGuid, cursor: selected, offset: top, height, width: props.width };
-  }, [props.chatGuid, selected, props.messages, props.width, props.height, viewportHeight]);
+    previous.current = { chat: props.chatGuid, cursor: selected, offset: top, height, width: props.width, maximum: bottom };
+  }, [props.chatGuid, selected, props.messages, props.typing, props.width, props.height, viewportHeight]);
   return <Box width={props.width} height={props.height} flexShrink={0} flexDirection="column">
     <Box height={3} paddingTop={1} flexShrink={0} paddingX={4} flexDirection="column">
       <Text bold color={colors.text} wrap="truncate-end">{props.title}</Text>

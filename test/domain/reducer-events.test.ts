@@ -18,6 +18,21 @@ function text(guid: string, sentAt: number, partial: Partial<TextMessage> = {}):
 }
 
 describe("domain event transitions", () => {
+  it("relabels a merged chat from its newest message and keeps that across list refreshes", () => {
+    const merged = parseChatGuid("any;-;alice@example.com");
+    const stored: Chat = { ...chat(merged), service: "SMS" };
+    let state = reduce(emptyState(), { type: "chats-loaded", chats: [stored] });
+    state = reduce(state, { type: "chat-service", chatGuid: merged, service: "iMessage", at: 2_000 });
+    expect(state.chats.get(merged)).toMatchObject({ service: "iMessage", serviceAt: 2_000 });
+    // A lookup for an older message that resolves late does not win.
+    state = reduce(state, { type: "chat-service", chatGuid: merged, service: "SMS", at: 1_000 });
+    expect(state.chats.get(merged)?.service).toBe("iMessage");
+    state = reduce(state, { type: "chats-loaded", chats: [stored] });
+    expect(state.chats.get(merged)).toMatchObject({ service: "iMessage", serviceAt: 2_000 });
+    state = reduce(state, { type: "chat-service", chatGuid: merged, service: "SMS", at: 3_000 });
+    expect(state.chats.get(merged)?.service).toBe("SMS");
+  });
+
   it("keeps list selection separate from the open conversation", () => {
     let state = reduce(emptyState(), { type: "chats-loaded", chats: [chat(), chat(secondGuid, "Bob")] });
     state = reduce(state, { type: "move-list", delta: 1 });

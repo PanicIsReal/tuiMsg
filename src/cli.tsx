@@ -1,5 +1,6 @@
 import { render, type Instance } from "ink";
-import { repaintImages, cleanupImages } from "./image-rendering.ts";
+import { cleanupImages, configureGraphics, repaintImages, trackTerminal } from "./image-rendering.ts";
+import { detectGraphics } from "./terminal-graphics.ts";
 import { parseArgs, resolveImsg } from "./config.ts";
 import { runFakeImsgRpc } from "./imsg/fake.ts";
 import { childConnector, type RpcConnector } from "./imsg/rpc.ts";
@@ -19,6 +20,8 @@ Set IMSG_PATH to use a specific imsg binary.
 
 Copy uses OSC 52 so SSH sessions can write the local clipboard.
 Attachments opened over SSH are saved on the Mac and their path is shown.
+Pictures use kitty graphics or sixel (Windows Terminal 1.22+) when the terminal
+supports them, else colored blocks. TUIMSG_IMAGES=kitty|sixel|blocks overrides.
 `;
 
 async function main(): Promise<void> {
@@ -79,8 +82,12 @@ async function main(): Promise<void> {
 
   process.once("SIGINT", () => { void close(); });
   process.once("SIGTERM", () => { void close(); });
+  // Asked before Ink takes stdin: whether pictures can be drawn in full (kitty or sixel).
+  configureGraphics(await detectGraphics(process.stdin, process.stdout));
   try {
     app = render(<App session={session} />, {
+      // Sixels vanish under rewritten text, so Ink's writes are watched to redraw them.
+      stdout: trackTerminal(process.stdout),
       exitOnCtrlC: false,
       patchConsole: false,
       alternateScreen: true,

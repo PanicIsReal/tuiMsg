@@ -1,7 +1,7 @@
 import { attachmentPath, openLocalFile, readAttachment, saveAttachment } from "./attachments.ts";
 import { writeClipboard } from "./clipboard.ts";
 import { contactLookupKey, parseMessageGuid, type ChatGuid, type MessageGuid } from "./domain/ids.ts";
-import { bridgeAvailable, chatActivity, emptyState, type AppEvent, type AppState, type Attachment, type Contact, type Intent, type Message, type SavedSession, type Session, type TextMessage } from "./domain/model.ts";
+import { bridgeAvailable, chatActivity, emptyState, serviceOfChatGuid, type AppEvent, type AppState, type Attachment, type Contact, type Intent, type Message, type SavedSession, type Session, type TextMessage } from "./domain/model.ts";
 import { reduce } from "./domain/reduce.ts";
 import { lastOwnReceipt } from "./domain/view.ts";
 import { BackendError, ImsgClient } from "./imsg/client.ts";
@@ -68,6 +68,8 @@ export function createSession(options: SessionOptions): Session {
   const receiptChecks = new Set<Timer>();
   const readRequests = new Map<ChatGuid, number>();
   const previewed = new Set<ChatGuid>();
+  // One service lookup per chat at a time; a newer message waits and replaces older waiters.
+  const serviceLookups = new Map<ChatGuid, { at: number; next?: TextMessage }>();
   const ackedGuids = new Set<MessageGuid>();
   const localSends = new Map<MessageGuid, LocalSend>();
   const imageCache = new Map<string, Uint8Array>();
@@ -122,8 +124,31 @@ export function createSession(options: SessionOptions): Session {
     if (fresh.length) dispatch({ type: "contacts-loaded", contacts: fresh });
   }
 
+  // A merged conversation (any;-;…) goes over whichever service its newest message used;
+  // the chat row's stored service can be years out of date.
+  function learnService(chatGuid: ChatGuid, message: Message | undefined, active = client): Promise<void> {
+    if (!active || message?.kind !== "text" || message.guid.startsWith("local-") || serviceOfChatGuid(chatGuid) !== undefined) return Promise.resolve();
+    if ((state.chats.get(chatGuid)?.serviceAt ?? Number.NEGATIVE_INFINITY) >= message.sentAt) return Promise.resolve();
+    const running = serviceLookups.get(chatGuid);
+    if (running) {
+      // A replayed watch can stream hundreds of rows; only the newest one matters.
+      if (message.sentAt > Math.max(running.at, running.next?.sentAt ?? Number.NEGATIVE_INFINITY)) running.next = message;
+      return Promise.resolve();
+    }
+    const lookup: { at: number; next?: TextMessage } = { at: message.sentAt };
+    serviceLookups.set(chatGuid, lookup);
+    return track(active.sendStatus(message.guid)).then((status) => {
+      if (status.service && client === active) dispatch({ type: "chat-service", chatGuid, service: status.service, at: message.sentAt }, false);
+    }).catch(() => undefined).then(() => {
+      if (serviceLookups.get(chatGuid) !== lookup) return undefined;
+      serviceLookups.delete(chatGuid);
+      return lookup.next && client === active ? learnService(chatGuid, lookup.next, active) : undefined;
+    });
+  }
+
   function handleLiveMessage(message: Message): void {
     if (message.kind === "text" && message.isFromMe) matchLocalSend(message);
+    void learnService(message.chatGuid, message);
     const chat = state.chats.get(message.chatGuid);
     if (!chat || chat.provisional || chat.rowId === undefined) scheduleChatsReload();
     if (message.kind === "text" && !message.isFromMe &&
@@ -293,6 +318,8 @@ export function createSession(options: SessionOptions): Session {
           if (!record || !message || client !== active) continue;
           learn(record.contacts);
           dispatch({ type: "chat-preview", chatGuid: chat.guid, message });
+          // Awaited, so startup lookups stay at PREVIEW_CONCURRENCY and never crowd out a chat being opened.
+          await learnService(chat.guid, message, active);
         } catch {
           previewed.delete(chat.guid);
         }
@@ -335,7 +362,11 @@ export function createSession(options: SessionOptions): Session {
         }, undefined);
         dispatch({ type: "history-loaded", chatGuid, request, page: { messages, next: page.count >= HISTORY_PAGE && oldest !== undefined ? { before: oldest } : null } });
         for (const message of messages) if (message.kind === "text" && message.isFromMe) matchLocalSend(message);
-        if (mode === "latest") checkReceipt(chatGuid);
+        if (mode === "latest") {
+          checkReceipt(chatGuid);
+          const newest = messages.reduce<Message | undefined>((found, message) => message.kind === "text" && message.sentAt > (found?.sentAt ?? Number.NEGATIVE_INFINITY) ? message : found, undefined);
+          void learnService(chatGuid, newest, active);
+        }
       })
       .catch((error) => dispatch({ type: "history-failed", chatGuid, request, message: errorText(error) }))
       .finally(() => historyLoads.delete(chatGuid));
@@ -352,6 +383,8 @@ export function createSession(options: SessionOptions): Session {
       const active = client;
       if (!message || !active || message.guid.startsWith("local-") || message.status === "read") return;
       track(active.sendStatus(message.guid).then((receipt) => {
+        // Recorded first, so the upsert below does not look the same message up again.
+        if (receipt.service && serviceOfChatGuid(chatGuid) === undefined) dispatch({ type: "chat-service", chatGuid, service: receipt.service, at: message.sentAt }, false);
         const status = receipt.readAt ? "read" : receipt.state === "delivered" ? "delivered" : receipt.state === "failed" ? "failed" : undefined;
         if (!status || status === message.status) return;
         dispatch({ type: "message-upserted", message: { ...message, status, ...(receipt.deliveredAt ? { deliveredAt: receipt.deliveredAt } : {}), ...(receipt.readAt ? { readAt: receipt.readAt } : {}) } });
@@ -623,6 +656,7 @@ export function createSession(options: SessionOptions): Session {
     activeImageLoads.clear();
     imageLoads.clear();
     readRequests.clear();
+    serviceLookups.clear();
     const active = client;
     client = undefined;
     await active?.close().catch(() => undefined);

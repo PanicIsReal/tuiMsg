@@ -1,25 +1,48 @@
-import sharp from "sharp";
+import sharp, { type Sharp } from "sharp";
 import { execFile } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 import { promisify } from "node:util";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ScreenTracker, type Damage } from "./screen-tracker.ts";
+import { decodeIndexedPng, encodeSixel, type IndexedImage } from "./sixel.ts";
+import { kittyFromEnvironment, type CellSize, type Graphics } from "./terminal-graphics.ts";
 
 const MAX_BYTES = 32 * 1024 * 1024;
 const MAX_PIXELS = 40_000_000;
 const MAX_FRAMES = 60;
+const MAX_SIXEL_PIXELS = 6_000_000;
+const BACKGROUND = "#181B21";
+// A half-block cell shows two square pixels stacked, so it is twice as tall as wide.
+const HALF_BLOCK_CELL: CellSize = { width: 1, height: 2 };
 const run = promisify(execFile);
-export type ImageFrame = { ansi: string; png: Buffer; delay: number };
+// `png` is only made for kitty. `sixel` holds one strip per cell row, so a rewritten row is
+// redrawn without the rest.
+export type ImageFrame = { ansi: string; png?: Buffer; delay: number; sixel?: string[] };
 export type DecodedImage = { frames: ImageFrame[]; width: number; height: number; still: boolean };
 export type ImageArea = { x: number; y: number; width: number; height: number };
 
 export function supportsNativeImages(env: NodeJS.ProcessEnv = process.env, tty = Boolean(process.stdout.isTTY)): boolean {
-  return tty && !env.TMUX && (Boolean(env.KITTY_WINDOW_ID) || env.TERM === "xterm-kitty" || env.TERM_PROGRAM === "WezTerm" || env.TERM_PROGRAM === "ghostty");
+  return tty && kittyFromEnvironment(env);
 }
 
-export function imageCellSize(width: number, height: number, columns: number, rows: number) {
-  const scale = Math.min(Math.max(1, columns) / width, Math.max(1, rows) * 2 / height);
-  return { width: Math.max(1, Math.floor(width * scale)), height: Math.max(1, Math.ceil(height * scale / 2)) };
+let configured: Graphics | undefined;
+// Set once at startup from the terminal probe; until then only the environment decides.
+export function configureGraphics(graphics: Graphics | undefined): void {
+  configured = graphics;
+}
+
+export function activeGraphics(): Graphics {
+  return configured ?? { protocol: supportsNativeImages() ? "kitty" : "blocks", cell: { width: 10, height: 20 } };
+}
+
+export function imageCellSize(width: number, height: number, columns: number, rows: number, cell: CellSize = HALF_BLOCK_CELL) {
+  const scale = Math.min(Math.max(1, columns) * cell.width / width, Math.max(1, rows) * cell.height / height);
+  return {
+    width: Math.min(Math.max(1, columns), Math.max(1, Math.round(width * scale / cell.width))),
+    height: Math.min(Math.max(1, rows), Math.max(1, Math.round(height * scale / cell.height))),
+  };
 }
 
 export async function decodeImage(bytes: Uint8Array, columns: number, rows: number, signal?: AbortSignal): Promise<DecodedImage> {
@@ -41,19 +64,41 @@ export async function decodeImage(bytes: Uint8Array, columns: number, rows: numb
   const sourceHeight = metadata.pageHeight ?? metadata.height;
   if (!sourceWidth || !sourceHeight || sourceWidth * sourceHeight > MAX_PIXELS) throw new Error("Image dimensions exceed the preview limit.");
   const rotated = metadata.orientation !== undefined && metadata.orientation >= 5;
-  const size = imageCellSize(rotated ? sourceHeight : sourceWidth, rotated ? sourceWidth : sourceHeight, columns, rows);
+  const graphics = activeGraphics();
+  const sixel = graphics.protocol === "sixel";
+  // Sized in the terminal's own cell shape, so the sixel and its placeholder line up.
+  const size = imageCellSize(rotated ? sourceHeight : sourceWidth, rotated ? sourceWidth : sourceHeight, columns, rows, sixel ? graphics.cell : HALF_BLOCK_CELL);
   const pages = metadata.pages ?? 1;
-  const frameCount = pages <= MAX_FRAMES && pages * sourceWidth * sourceHeight <= MAX_PIXELS ? pages : 1;
+  // A sixel is resent whenever its rows are redrawn, so animations stay on their first frame.
+  const frameCount = !sixel && pages <= MAX_FRAMES && pages * sourceWidth * sourceHeight <= MAX_PIXELS ? pages : 1;
   const frames: ImageFrame[] = [];
   for (let page = 0; page < frameCount; page++) {
     signal?.throwIfAborted();
     const pipeline = sharp(source, { ...options, page, pages: 1 }).autoOrient();
-    const png = await pipeline.clone().resize({ width: 2560, height: 2560, fit: "inside", withoutEnlargement: true }).png().toBuffer();
+    const png = graphics.protocol === "kitty" ? await pipeline.clone().resize({ width: 2560, height: 2560, fit: "inside", withoutEnlargement: true }).png().toBuffer() : undefined;
+    const strips = sixel ? await sixelStrips(pipeline.clone(), size, graphics.cell) : undefined;
     const { data, info } = await pipeline.resize(size.width, size.height * 2, { fit: "fill" })
-      .flatten({ background: "#181B21" }).removeAlpha().raw().toBuffer({ resolveWithObject: true });
-    frames.push({ ansi: halfBlocks(data, info.width, info.height, info.channels), png, delay: Math.max(80, metadata.delay?.[page] ?? 100) });
+      .flatten({ background: BACKGROUND }).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+    frames.push({ ansi: halfBlocks(data, info.width, info.height, info.channels), delay: Math.max(80, metadata.delay?.[page] ?? 100), ...(png ? { png } : {}), ...(strips ? { sixel: strips } : {}) });
   }
   return { frames, ...size, still: pages > frameCount };
+}
+
+// Quantized once so every strip shares one palette; each strip then declares only the
+// registers it uses.
+async function sixelStrips(pipeline: Sharp, size: { width: number; height: number }, cell: CellSize): Promise<string[] | undefined> {
+  const width = size.width * cell.width;
+  const height = size.height * cell.height;
+  if (width * height > MAX_SIXEL_PIXELS) return undefined;
+  const png = await pipeline.resize(width, height, { fit: "fill" }).flatten({ background: BACKGROUND })
+    .png({ palette: true, colours: 256, dither: 1, effort: 4 }).toBuffer();
+  const image = decodeIndexedPng(png);
+  return Array.from({ length: size.height }, (_, row) => encodeSixel(stripOf(image, row * cell.height, cell.height)));
+}
+
+function stripOf(image: IndexedImage, top: number, rows: number): IndexedImage {
+  const height = Math.max(0, Math.min(rows, image.height - top));
+  return { ...image, height, pixels: image.pixels.subarray(top * image.width, (top + height) * image.width) };
 }
 
 function halfBlocks(data: Buffer, width: number, height: number, channels: number): string {
@@ -98,17 +143,25 @@ export function deleteKittyImage(id: number): string {
   return `\x1b_Ga=d,d=I,i=${id},q=2\x1b\\`;
 }
 
-type NativeImage = { png: Buffer; measure: () => ImageArea | null };
-type RegisteredImage = NativeImage & { transmitted: boolean; placed: boolean };
+type NativeImage = { png?: Buffer | undefined; sixel?: string[] | undefined; measure: () => ImageArea | null };
+// `shown` is where a sixel's strips were last drawn in full; `written` is where its
+// placeholder sat in the last frame Ink wrote, which can trail the layout by a frame.
+type RegisteredImage = NativeImage & {
+  transmitted: boolean; placed: boolean; shown: ImageArea | null; written?: ImageArea | null;
+  settle?: { timer: ReturnType<typeof setTimeout>; area: ImageArea } | undefined;
+};
 const images = new Map<number, RegisteredImage>();
 let nextImageId = 17000;
 export function registerImage(image: NativeImage): () => void {
   const id = ++nextImageId;
-  images.set(id, { ...image, transmitted: false, placed: false });
+  images.set(id, { ...image, transmitted: false, placed: false, shown: null });
   repaintImages();
   return () => {
+    const removed = images.get(id);
+    if (removed?.settle) clearTimeout(removed.settle.timer);
     images.delete(id);
-    if (process.stdout.isTTY) process.stdout.write(deleteKittyImage(id));
+    // A sixel leaves with the text that Ink writes over it.
+    if (process.stdout.isTTY && !removed?.sixel) process.stdout.write(deleteKittyImage(id));
   };
 }
 
@@ -124,12 +177,129 @@ export function repaintImages(): void {
   pendingPaint = setImmediate(() => {
     pendingPaint = undefined;
     for (const observe of visibilityObservers) observe();
-    if (supportsNativeImages()) paintImages();
+    const protocol = activeGraphics().protocol;
+    if (protocol === "kitty") paintImages();
+    // Moved sixels are redrawn when Ink rewrites their rows; only new ones are drawn here.
+    else if (protocol === "sixel") writeSixels(sixelRepaint({ all: false, rows: new Set() }, sixelTarget().rows ?? 24, sixelTarget().columns ?? 80, true));
+  });
+}
+
+// A picture that is moving (scrolling) shows its placeholder until it rests this long, so a
+// fast scroll does not resend every picture on every frame.
+const SETTLE_MS = 120;
+
+function sixelTarget(): NodeJS.WriteStream {
+  return terminal ?? process.stdout;
+}
+
+function writeSixels(output: string): void {
+  const target = sixelTarget();
+  if (output && target.isTTY) target.write(output);
+}
+
+function sameArea(a: ImageArea, b: ImageArea): boolean {
+  return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
+}
+
+// Restarted only while the picture keeps moving; other writes leave the timer alone.
+function settleLater(image: RegisteredImage, area: ImageArea): void {
+  if (image.settle && sameArea(image.settle.area, area)) return;
+  if (image.settle) clearTimeout(image.settle.timer);
+  image.settle = { area, timer: setTimeout(() => {
+    image.settle = undefined;
+    if (![...images.values()].includes(image) || !image.sixel) return;
+    const target = sixelTarget();
+    const area = sixelArea(image, target.rows ?? 24, target.columns ?? 80);
+    if (!area) return;
+    // Ink has not written this layout yet; drawing now would be erased by that frame.
+    if (!image.written || !sameArea(image.written, area)) {
+      settleLater(image, area);
+      return;
+    }
+    image.shown = area;
+    writeSixels(`\x1b7${stripsAt(image.sixel, area, () => true)}\x1b8`);
+  }, SETTLE_MS) };
+}
+
+function stripsAt(strips: string[], area: ImageArea, include: (row: number) => boolean): string {
+  let output = "";
+  for (let row = 0; row < area.height; row++) if (include(row)) output += `\x1b[${area.y + row + 1};${area.x + 1}H${strips[row]}`;
+  return output;
+}
+
+// Draws the sixel strips an Ink write erased; onlyNew draws sixels not yet on screen. A moved
+// picture waits to settle (Ink has already rewritten its rows with the placeholder). It must
+// stay clear of the last row, since finishing an image there scrolls Ink's frame.
+export function sixelRepaint(damage: Damage, rows: number, columns: number, onlyNew = false): string {
+  let output = "";
+  for (const image of images.values()) {
+    if (!image.sixel) continue;
+    const area = sixelArea(image, rows, columns);
+    if (!onlyNew) image.written = area;
+    if (!area) {
+      image.shown = null;
+      continue;
+    }
+    const shown = image.shown;
+    if (shown && !sameArea(shown, area)) {
+      if (!onlyNew) settleLater(image, area);
+      continue;
+    }
+    // Back where it was drawn: the rewritten rows below are repainted now, so no settle is due.
+    if (shown && image.settle && !onlyNew) {
+      clearTimeout(image.settle.timer);
+      image.settle = undefined;
+    }
+    if (onlyNew && shown) continue;
+    const touched = (row: number) => damage.all || damage.rows.has(area.y + row);
+    // The first time every strip goes out; afterwards only the ones under rewritten rows.
+    const whole = onlyNew || (!shown && Array.from({ length: area.height }, (_, row) => touched(row)).some(Boolean));
+    output += stripsAt(image.sixel, area, (row) => whole || touched(row));
+    if (whole) image.shown = area;
+  }
+  return output ? `\x1b7${output}\x1b8` : "";
+}
+
+function sixelArea(image: RegisteredImage, rows: number, columns: number): ImageArea | null {
+  const area = image.measure();
+  return area && image.sixel && area.x >= 0 && area.y >= 0 && area.width >= 1 && area.height >= 1 &&
+    area.x + area.width <= columns && area.y + area.height < rows && area.height === image.sixel.length ? area : null;
+}
+
+// The sixels that belong on screen now, for checking what a terminal was sent.
+export function sixelPlacements(rows: number, columns: number): { area: ImageArea; strips: string[] }[] {
+  return [...images.values()].flatMap((image) => {
+    const area = sixelArea(image, rows, columns);
+    return area && image.sixel ? [{ area, strips: image.sixel }] : [];
+  });
+}
+
+// Ink's stdout, with every write followed by the sixel strips it erased. They join the same
+// write so a synchronized frame (BSU … ESU) shows text and pictures together.
+let terminal: NodeJS.WriteStream | undefined;
+export function trackTerminal(stream: NodeJS.WriteStream): NodeJS.WriteStream {
+  terminal = stream;
+  const tracker = new ScreenTracker(() => stream.rows ?? 24);
+  const decoder = new StringDecoder("utf8");
+  const write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+    const text = typeof chunk === "string" ? chunk : decoder.write(Buffer.from(chunk));
+    const damage = tracker.feed(text);
+    const repaint = activeGraphics().protocol === "sixel" ? sixelRepaint(damage, stream.rows ?? 24, stream.columns ?? 80) : "";
+    const data = !repaint ? chunk : typeof chunk === "string" ? chunk + repaint : Buffer.concat([Buffer.from(chunk), Buffer.from(repaint)]);
+    return Reflect.apply(stream.write, stream, [data, ...rest]) as boolean;
+  };
+  return new Proxy(stream, {
+    get(target, property) {
+      if (property === "write") return write;
+      const value: unknown = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
   });
 }
 
 function paintImages(): void {
   for (const [id, image] of images) {
+    if (!image.png) continue;
     const area = image.measure();
     const removePlacement = `\x1b_Ga=d,d=i,i=${id},q=2\x1b\\`;
     if (!area || area.width < 1 || area.height < 1 || area.x < 0 || area.y < 0 || area.x + area.width > process.stdout.columns || area.y + area.height > process.stdout.rows) {
@@ -152,6 +322,7 @@ function paintImages(): void {
 export function cleanupImages(): void {
   if (pendingPaint) clearImmediate(pendingPaint);
   pendingPaint = undefined;
-  if (process.stdout.isTTY) for (const id of images.keys()) process.stdout.write(deleteKittyImage(id));
+  for (const image of images.values()) if (image.settle) clearTimeout(image.settle.timer);
+  if (process.stdout.isTTY) for (const [id, image] of images) if (!image.sixel) process.stdout.write(deleteKittyImage(id));
   images.clear();
 }

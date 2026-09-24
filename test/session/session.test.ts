@@ -218,6 +218,54 @@ describe("session over imsg", () => {
     } finally { await session.close(); }
   });
 
+  it("labels a merged conversation by its newest message, not the chat row's stale service", async () => {
+    const wife = "+15550009999";
+    const merged = parseChatGuid(`any;-;${wife}`);
+    const shortCode = parseChatGuid("any;-;4735");
+    const { fake, session } = fakeSession({
+      chats: [
+        { id: 1, guid: merged, identifier: wife, service: "SMS", is_group: false, contact_name: "Wife", participants: [wife], unread_count: 0 },
+        { id: 2, guid: shortCode, identifier: "4735", service: "iMessage", is_group: false, participants: ["4735"], unread_count: 0 },
+      ],
+      messages: [
+        { id: 1, chat_id: 1, guid: "years-ago", sender: wife, is_from_me: false, text: "before her iPhone", created_at: Date.now() - 86_400_000, service: "SMS" },
+        { id: 2, chat_id: 1, guid: "latest", sender: wife, is_from_me: false, text: "Hi", created_at: Date.now() - 60_000, service: "iMessage" },
+        { id: 3, chat_id: 2, guid: "code", sender: "4735", is_from_me: false, text: "Your code is 1234", created_at: Date.now() - 120_000, service: "SMS" },
+      ],
+    });
+    try {
+      await session.start();
+      await eventually(() => session.getSnapshot().chats.get(merged)?.service === "iMessage" && session.getSnapshot().chats.get(shortCode)?.service === "SMS");
+      // A refreshed list brings back the stored service; what the newest message showed stays.
+      session.act({ type: "refresh" });
+      await eventually(() => fake.requests.filter((request) => request.method === "chats.list").length === 2);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(session.getSnapshot().chats.get(merged)?.service).toBe("iMessage");
+      // A newer message over the other service relabels the conversation.
+      fake.deliver({ chat_id: 1, guid: "no-data", sender: wife, is_from_me: false, text: "no data here", created_at: Date.now(), service: "SMS" });
+      await eventually(() => session.getSnapshot().chats.get(merged)?.service === "SMS");
+      // A burst of rows, as a replayed watch delivers, costs a few lookups and ends on the newest.
+      const lookups = () => fake.requests.filter((request) => request.method === "message.send_status").length;
+      const before = lookups();
+      for (let index = 0; index < 30; index++) {
+        fake.deliver({ chat_id: 1, guid: `burst-${index}`, sender: wife, is_from_me: false, text: `burst ${index}`, created_at: Date.now() + index, service: index === 29 ? "iMessage" : "SMS" });
+      }
+      await eventually(() => session.getSnapshot().chats.get(merged)?.service === "iMessage");
+      expect(lookups() - before).toBeLessThanOrEqual(3);
+    } finally { await session.close(); }
+  });
+
+  it("trusts a service-specific chat GUID without looking anything up", async () => {
+    const { fake, session } = fakeSession();
+    try {
+      await session.start();
+      await eventually(() => [...session.getSnapshot().chats.values()].every((chat) => chat.lastMessage));
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(session.getSnapshot().chats.get(parseChatGuid("SMS;-;+15551230002"))?.service).toBe("SMS");
+      expect(fake.requests.some((request) => request.method === "message.send_status")).toBe(false);
+    } finally { await session.close(); }
+  });
+
   it("starts a conversation with a new recipient and opens it", async () => {
     const { fake, session } = fakeSession();
     try {

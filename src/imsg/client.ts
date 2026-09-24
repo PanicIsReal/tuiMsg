@@ -2,7 +2,7 @@ import type { ChatGuid, MessageGuid } from "../domain/ids.ts";
 import { parseChatGuid, parseMessageGuid } from "../domain/ids.ts";
 import type { Chat, Contact, Reaction, Service } from "../domain/model.ts";
 import { cleanLine } from "../domain/text.ts";
-import { parseChat, parseMessageRecord, parseStatus, type ImsgStatus, type ParsedRecord } from "./parse.ts";
+import { parseChat, parseMessageRecord, parseService, parseStatus, type ImsgStatus, type ParsedRecord } from "./parse.ts";
 import { ImsgMissingError, RpcClosedError, RpcConnection, RpcError, RpcNotSentError, RpcTimeoutError } from "./rpc.ts";
 
 export type BackendErrorKind = "missing" | "access" | "unsupported" | "invalid" | "failed" | "blocked" | "stopped";
@@ -87,16 +87,19 @@ export class ImsgClient {
     });
   }
 
-  // Message rows carry no delivery state, so receipts are looked up per outgoing GUID.
-  async sendStatus(guid: MessageGuid): Promise<{ state: string; deliveredAt?: number; readAt?: number }> {
+  // Message rows carry no delivery state or service, so both are looked up per GUID. The
+  // lookup works for any message, not only outgoing ones.
+  async sendStatus(guid: MessageGuid): Promise<{ state: string; deliveredAt?: number; readAt?: number; service?: Service }> {
     const result = await this.call("message.send_status", { guid });
     const fields = typeof result === "object" && result !== null ? (result as Record<string, unknown>).status_fields : undefined;
     const deliveredAt = Date.parse(stringField(result, "delivered_at") ?? "");
     const readAt = Date.parse(stringField(fields, "date_read") ?? "");
+    const service = stringField(result, "service");
     return {
       state: stringField(result, "send_state") ?? "pending",
       ...(Number.isFinite(deliveredAt) ? { deliveredAt } : {}),
       ...(Number.isFinite(readAt) ? { readAt } : {}),
+      ...(service ? { service: parseService(service) } : {}),
     };
   }
 

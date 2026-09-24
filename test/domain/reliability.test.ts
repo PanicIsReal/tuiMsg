@@ -77,6 +77,18 @@ describe("message reliability", () => {
     expect(moved.messageCursor.get(chatGuid)).toBe(guid);
   });
 
+  it("moves the selection to a message as it is sent, and keeps it there once acknowledged", () => {
+    const loaded = reduce(initialState(), { type: "messages-loaded", chatGuid, messages: [message] });
+    const reading = reduce(loaded, { type: "select-message", chatGuid, messageGuid: guid });
+    const sending = reduce(reading, { type: "send-requested", chatGuid, text: "On my way", tempGuid });
+    // No stored cursor means the newest message, the pending one, is selected and scrolled to.
+    expect(sending.messageCursor.has(chatGuid)).toBe(false);
+    const picked = reduce(sending, { type: "select-message", chatGuid, messageGuid: tempGuid });
+    const server = parseMessageGuid("server-reply");
+    const acknowledged = reduce(picked, { type: "send-acked", tempGuid, guid: server });
+    expect(acknowledged.messageCursor.get(chatGuid)).toBe(server);
+  });
+
   it("retains the message preview when a reaction arrives", () => {
     const received = reduce(initialState(), { type: "message-upserted", message });
     const reacted = reduce(received, { type: "message-upserted", message: {

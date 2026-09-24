@@ -54,7 +54,7 @@ Things that behave differently in a remote terminal:
 - **Copying:** `y` copies the selected message through OSC 52. Windows Terminal supports it, as do most modern terminals; some, such as iTerm2, need clipboard access enabled in their settings. PuTTY does not support it, and `tuimsg` cannot detect that, so it still reports "Copied." In tmux, enable `set -g set-clipboard on` and `set -g allow-passthrough on`. To select part of a message with the mouse, hold `Shift` while dragging in Windows Terminal and most other terminals.
 - **Attachments:** files live on the Mac. `o` and `s` save a copy under `~/.config/tuimsg/attachments` and show its path; fetch it with `scp your-mac:<path> .`. In a local session on the Mac, `o` opens the original in its app.
 - **Read state:** leaving a conversation open marks new messages in it as read, even when your terminal is minimized or tmux is detached.
-- **Image previews:** Windows Terminal shows color half-block previews. Native bitmap images need a Kitty-compatible terminal that is detected through `TERM=xterm-kitty`, because SSH does not forward the variables that identify WezTerm or Ghostty.
+- **Image previews:** Windows Terminal 1.22 and later shows full-resolution photos through sixel. `tuimsg` asks the terminal at startup whether it supports sixel and how many pixels a cell holds, so this also works over SSH. Older Windows Terminal releases, tmux without sixel support, and terminals that don't answer get color half-block previews. See [Images](#images).
 
 Output is incremental, so a keystroke usually redraws only the lines that changed. Animated GIFs keep redrawing while they are on screen, which uses more bandwidth on slow links.
 
@@ -105,7 +105,13 @@ Received photos appear inline with their messages. Press `v` on an image message
 
 PNG, JPEG, WebP, and GIF previews decode locally. GIFs animate while visible. HEIC photos use the macOS image converter when the bundled decoder cannot read them. Attachments that Messages keeps only in iCloud show as not downloaded; open them once in Messages on the Mac. An unsupported or corrupt preview keeps the original available to open or save.
 
-Kitty-compatible terminals use native bitmap images. Other terminals, including iTerm2 and tmux sessions, use color half-block previews. Native previews are limited to 2560 pixels on the longest side; opening or saving preserves the original file. Previews decode files up to 32 MB and 40 million pixels. GIFs exceeding 60 frames or a total 40-million-pixel animation budget show a still frame.
+How a photo is drawn depends on the terminal:
+
+- **Kitty graphics:** kitty, Ghostty, and WezTerm, recognized from `TERM=xterm-kitty` or `TERM=xterm-ghostty` (both survive SSH) or from the local environment. Native previews are limited to 2560 pixels on the longest side.
+- **Sixel:** terminals that report sixel support (attribute 4 of their device attributes) and their cell size in pixels, such as Windows Terminal 1.22+, foot, WezTerm, and mlterm. Each picture is quantized to 256 colors and sent one text row at a time, so when other parts of the screen redraw, only the rows they touch are sent again. A 48 × 10 cell preview is roughly 100 to 150 KB. Animated GIFs show their first frame.
+- **Half blocks:** everything else, including tmux builds without sixel. Each cell shows two colored pixels.
+
+Set `TUIMSG_IMAGES=kitty`, `sixel`, or `blocks` to override the choice, for example `blocks` on a slow link. Opening or saving always uses the original file. Previews decode files up to 32 MB and 40 million pixels. GIFs exceeding 60 frames or a total 40-million-pixel animation budget show a still frame.
 
 Message text, names, and filenames are cleaned of terminal control characters before display, so a message cannot ring the bell, move the cursor, or hide a link's destination.
 
@@ -124,6 +130,6 @@ The tests cover the domain, the imsg JSON-RPC client and parser, the session aga
 
 `test:colors` captures the full Ink interface at 80 and 180 columns with 256-color output. It checks for unpainted cells on a white terminal background and writes ANSI, SVG, and PNG previews under `.audit/colors`. The palette tests also cover 16-color and truecolor output.
 
-`smoke:images` checks local attachment previews, both rendering paths, expanded viewing, byte-for-byte original saving, resize, and cleanup through the compiled app. Its native check verifies the generated Kitty protocol; it does not substitute for viewing the result in a compatible terminal.
+`smoke:images` checks local attachment previews, all three rendering paths, expanded viewing, byte-for-byte original saving, resize, and cleanup through the compiled app. Its sixel run answers the startup probe the way Windows Terminal does. The unit tests check sixel output by decoding it back to pixels, and replay the app's output through a model of Windows Terminal's sixel rules to confirm that every preview stays whole as the screen redraws and nothing stale is left behind. None of this substitutes for viewing the result in a real terminal.
 
 Local tests do not replace trying it against your own Messages database. They never send real messages.

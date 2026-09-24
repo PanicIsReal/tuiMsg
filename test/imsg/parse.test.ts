@@ -25,6 +25,17 @@ describe("imsg chats", () => {
     const { chat } = parseChat({ id: 8, guid: "iMessage;+;chat9", identifier: "chat9", service: "iMessage", is_group: true, display_name: "Evil\x1b]0;TITLE\x07Group", participants: [], unread_count: 0 });
     expect(chat.title).toBe("Evil]0;TITLEGroup");
   });
+
+  it("takes the service from a service-specific GUID and only guesses it for a merged chat", () => {
+    const row = { id: 9, identifier: "+15550009999", is_group: false, participants: ["+15550009999"], unread_count: 0 };
+    expect(parseChat({ ...row, guid: "iMessage;-;+15550009999", service: "SMS" }).chat.service).toBe("iMessage");
+    expect(parseChat({ ...row, guid: "SMS;-;+15550009999", service: "iMessage" }).chat.service).toBe("SMS");
+    const merged = parseChat({ ...row, guid: "any;-;+15550009999", service: "SMS" }).chat;
+    expect(merged.service).toBe("SMS");
+    expect(merged.serviceAt).toBeUndefined();
+    const record = parseMessageRecord({ id: 1, guid: "m", chat_guid: "any;-;+15550009999", sender: "+15550009999", is_from_me: false, text: "hi", created_at: "2026-09-24T12:00:00.000Z" });
+    expect(record.messages[0]).toMatchObject({ from: { service: "iMessage" } });
+  });
 });
 
 describe("imsg messages", () => {

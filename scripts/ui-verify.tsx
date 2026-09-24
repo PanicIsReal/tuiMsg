@@ -423,6 +423,47 @@ await delay(10);
 await setup.flush();
 assert.doesNotMatch(setup.captureCharFrame(), /Switch older|Long message/);
 
+// Resting on the newest message, the transcript follows sends, receipts, arrivals, and typing,
+// even while j/k left the selection on a message that is now older.
+const tail: Message[] = Array.from({ length: 16 }, (_, index) => ({
+  ...(longMessages[0] as Extract<Message, { kind: "text" }>),
+  guid: parseMessageGuid(`tail-${index}`),
+  body: `Tail ${String(index).padStart(2, "0")} keeps this conversation long`,
+  sentAt: Date.now() + 1_000 + index,
+}));
+state = {
+  ...state,
+  selected: firstChat,
+  input: { kind: "transcript", chatGuid: firstChat },
+  messages: new Map(state.messages).set(firstChat, tail),
+  messageCursor: new Map(state.messageCursor).set(firstChat, tail.at(-1)!.guid),
+};
+for (const listener of listeners) listener();
+await setup.flush();
+assert.match(setup.captureCharFrame(), /Tail 15/);
+const followed: Extract<Message, { kind: "text" }> = { ...(tail[1] as Extract<Message, { kind: "text" }>), guid: parseMessageGuid("follow-sent"), from: me, isFromMe: true, body: "Follow the send", sentAt: Date.now() + 2_000, status: "sent" };
+state = { ...state, messages: new Map(state.messages).set(firstChat, [...tail, followed]) };
+for (const listener of listeners) listener();
+await setup.flush();
+assert.match(setup.captureCharFrame(), /Follow the send/, "a sent message must scroll into view");
+const delivered: Message = { ...followed, status: "delivered" };
+state = { ...state, messages: new Map(state.messages).set(firstChat, [...tail, delivered]) };
+for (const listener of listeners) listener();
+await setup.flush();
+assert.match(setup.captureCharFrame(), /Delivered/, "a receipt under the newest message must stay in view");
+const arrival: Message = { ...(tail[0] as Extract<Message, { kind: "text" }>), guid: parseMessageGuid("follow-arrival"), body: "Follow the arrival", sentAt: Date.now() + 3_000 };
+state = { ...state, messages: new Map(state.messages).set(firstChat, [...tail, delivered, arrival]) };
+for (const listener of listeners) listener();
+await setup.flush();
+assert.match(setup.captureCharFrame(), /Follow the arrival/, "an arrival must scroll into view at the bottom");
+state = { ...state, typing: new Map(state.typing).set(firstChat, true) };
+for (const listener of listeners) listener();
+await setup.flush();
+assert.match(setup.captureCharFrame(), /• • •/, "the typing indicator must stay in view at the bottom");
+state = { ...state, typing: new Map() };
+for (const listener of listeners) listener();
+await setup.flush();
+
 const manyChats: Chat[] = Array.from({ length: 18 }, (_, index) => {
   const guid = parseChatGuid(`SMS;-;list-${index}`);
   return {

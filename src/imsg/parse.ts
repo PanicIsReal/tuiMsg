@@ -1,5 +1,5 @@
 import { parseChatGuid, parseHandleAddress, parseMessageGuid, type ChatGuid } from "../domain/ids.ts";
-import type { Attachment, Chat, Contact, Handle, Message, Service, TapbackKind, TapbackMessage, TextMessage } from "../domain/model.ts";
+import { serviceOfChatGuid, type Attachment, type Chat, type Contact, type Handle, type Message, type Service, type TapbackKind, type TapbackMessage, type TextMessage } from "../domain/model.ts";
 import { cleanLine, cleanText } from "../domain/text.ts";
 
 // Maps the JSON documented at https://imsg.sh/json and https://imsg.sh/rpc into domain types.
@@ -44,10 +44,6 @@ export function parseService(value: unknown): Service {
   return raw === "sms" || raw === "rcs" ? "SMS" : "iMessage";
 }
 
-function serviceOfChat(guid: string): Service {
-  return parseService(guid.split(";", 1)[0]);
-}
-
 // Messages tapback targets can carry a part prefix such as p:0/GUID or bp:GUID.
 export function stripPart(guid: string): string {
   return guid.replace(/^(?:p:\d+\/|bp:)/, "");
@@ -83,11 +79,14 @@ export function parseChat(value: unknown): { chat: Chat; contacts: Contact[] } {
   if (!isRecord(value)) throw new Error("chat must be an object");
   const rowId = num(value.id);
   if (rowId === undefined) throw new Error("chat is missing its id");
-  const service = parseService(value.service);
+  const stored = parseService(value.service);
   const identifier = str(value.identifier) ?? "";
   const isGroup = value.is_group === true;
-  const rawGuid = str(value.guid) || `${service};${isGroup ? "+" : "-"};${identifier}`;
+  const rawGuid = str(value.guid) || `${stored};${isGroup ? "+" : "-"};${identifier}`;
   const guid = parseChatGuid(rawGuid);
+  // The row's service_name is only a first guess for a merged (any;) conversation; the
+  // session replaces it with the service of the newest message.
+  const service = serviceOfChatGuid(rawGuid) ?? stored;
   const addresses = Array.isArray(value.participants) ? value.participants.filter((entry): entry is string => typeof entry === "string" && entry.length > 0) : [];
   if (!isGroup && addresses.length === 0 && identifier) addresses.push(identifier);
   const contactName = str(value.contact_name);
@@ -149,7 +148,8 @@ export function parseMessageRecord(value: unknown): ParsedRecord {
   const rawGuid = str(value.guid);
   if (!rawGuid) throw new Error("message is missing its guid");
   const chatGuid = parseChatGuid(str(value.chat_guid) ?? "");
-  const service = serviceOfChat(chatGuid);
+  // Message rows carry no service; message.send_status reports it per GUID.
+  const service = serviceOfChatGuid(chatGuid) ?? "iMessage";
   const rowId = num(value.id);
   const isFromMe = value.is_from_me === true;
   const sender = str(value.sender) ?? "";

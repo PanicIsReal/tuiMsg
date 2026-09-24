@@ -10,6 +10,8 @@ export type FakeImsgReaction = { type: string; emoji?: string; add: boolean; tar
 export type FakeImsgMessage = {
   id: number; chat_id: number; guid: string; sender: string; sender_name?: string; is_from_me: boolean;
   text: string; created_at: number; attachments?: FakeImsgAttachment[]; reply_to_guid?: string; reaction?: FakeImsgReaction;
+  // The message row's own service; defaults to the chat's stored one.
+  service?: "iMessage" | "SMS";
 };
 export type FakeImsgChat = {
   id: number; guid: string; identifier: string; service: "iMessage" | "SMS"; is_group: boolean;
@@ -148,10 +150,13 @@ export class FakeImsg {
       }
       case "typing": return { result: { ok: true } };
       case "message.send_status": {
-        const message = this.messages.find((candidate) => candidate.guid === params.guid && candidate.is_from_me);
-        if (!message) return { result: { ok: true, guid: params.guid, send_state: "pending", status_fields: null } };
+        // Like imsg, any message row answers, incoming ones included.
+        const message = this.messages.find((candidate) => candidate.guid === params.guid);
+        if (!message) return { result: { ok: true, guid: params.guid, send_state: "pending", service: null, status_fields: null } };
+        const service = message.service ?? this.chat(message.chat_id).service;
+        if (!message.is_from_me) return { result: { ok: true, guid: message.guid, send_state: "sent", service, status_fields: { is_sent: false, is_delivered: false, error: 0, date_delivered: null, date_read: null } } };
         const delivered = new Date(message.created_at + 1_000).toISOString();
-        return { result: { ok: true, guid: message.guid, send_state: "delivered", delivered_at: delivered, status_fields: { is_sent: true, is_delivered: true, error: 0, date_delivered: delivered, date_read: null } } };
+        return { result: { ok: true, guid: message.guid, send_state: "delivered", service, delivered_at: delivered, status_fields: { is_sent: true, is_delivered: true, error: 0, date_delivered: delivered, date_read: null } } };
       }
       default: throw new FakeError(-32601, "Method not found", method);
     }
@@ -235,12 +240,14 @@ export class FakeImsg {
     if (!text) throw new FakeError(-32602, "Invalid params", "text or file is required");
     if (params.reply_to !== undefined && !this.bridge) throw new FakeError(-32003, "Bridge unavailable", { detail: "Replies require the imsg bridge.", retryable: true });
     const chat = this.target(params);
+    // Messages carries on over the service the conversation last used.
+    const service = this.messages.filter((row) => row.chat_id === chat.id && !row.reaction).toSorted((a, b) => b.created_at - a.created_at || b.id - a.id)[0]?.service ?? chat.service;
     const message = this.deliver({
-      chat_id: chat.id, guid: `sent-${this.nextRowId}`, sender: chat.is_group ? "" : chat.identifier, is_from_me: true, text, created_at: Date.now(),
+      chat_id: chat.id, guid: `sent-${this.nextRowId}`, sender: chat.is_group ? "" : chat.identifier, is_from_me: true, text, created_at: Date.now(), service,
       ...(typeof params.reply_to === "string" ? { reply_to_guid: params.reply_to } : {}),
     });
     this.sent.push({ chat_guid: chat.guid, text, ...(typeof params.reply_to === "string" ? { reply_to: params.reply_to } : {}) });
-    return { ok: true, transport: "applescript", id: message.id, guid: message.guid, chat_guid: chat.guid, service: chat.service };
+    return { ok: true, transport: "applescript", id: message.id, guid: message.guid, chat_guid: chat.guid, service };
   }
 
   private createChat(params: Record<string, unknown>): Record<string, unknown> {
