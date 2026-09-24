@@ -124,10 +124,14 @@ describe("the app through the tracked terminal", () => {
     });
     const tracked = trackTerminal(sink as unknown as NodeJS.WriteStream);
     let last = "";
+    // Ink's frames come as an erase and the lines, or, when one overflows the screen (as on a
+    // resize), as a clear and the lines; the second kind passes through untouched.
+    const CLEAR = "\x1b[2J\x1b[3J\x1b[H";
     const recorder = new Proxy(tracked, {
       get(target, property) {
         if (property === "write") return (data: string | Uint8Array, ...rest: unknown[]) => {
-          const frame = frameText(typeof data === "string" ? data : Buffer.from(data).toString("utf8"));
+          const text = typeof data === "string" ? data : Buffer.from(data).toString("utf8");
+          const frame = text.startsWith(CLEAR) ? text.slice(CLEAR.length) : frameText(text);
           if (frame !== undefined) last = frame;
           return target.write(data as string, ...(rest as []));
         };
@@ -144,8 +148,12 @@ describe("the app through the tracked terminal", () => {
       incrementalRendering: false, exitOnCtrlC: false, patchConsole: false, maxFps: 1000,
     });
     const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    // The screen must match Ink's latest frame once the update lands, which takes longer on
+    // a busy machine, and after a resize only once Ink redraws at the new size.
     const check = async (label: string) => {
-      await pause(120);
+      const matches = () => JSON.stringify(screen.snapshot()) === JSON.stringify(drawn(last, sink.columns, sink.rows));
+      await pause(40);
+      for (const deadline = Date.now() + 5_000; !matches() && Date.now() < deadline;) await pause(20);
       expect(screen.snapshot(), label).toEqual(drawn(last, sink.columns, sink.rows));
     };
     try {
