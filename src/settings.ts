@@ -48,8 +48,3 @@ export function chooseTheme(env: NodeJS.ProcessEnv, saved: ThemeName | undefined
   if (forced === "auto") return detected ?? "dark";
   return saved ?? detected ?? "dark";
 }
-
-export function themeNeedsDetection(env: NodeJS.ProcessEnv, saved: ThemeName | undefined): boolean {
-  const forced = env.TUIMSG_THEME?.toLowerCase();
-  return forced === "auto" || (forced !== "light" && forced !== "dark" && saved === undefined);
-}

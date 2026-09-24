@@ -12,13 +12,11 @@ const requestLog = join(directory, "imsg-requests.ndjson");
 let output = "";
 const decoder = new TextDecoder();
 const binary = resolve(process.argv[2] ?? "bin/tuimsg");
+// 256 colors whatever the caller's environment, so the theme's colors reach the terminal.
+const env: NodeJS.ProcessEnv = { ...process.env, TERM: "xterm-256color", FORCE_COLOR: "2", TUIMSG_HOME: directory, TUIMSG_FAKE_LOG: requestLog };
+delete env.NO_COLOR;
 const child = spawn([process.execPath, binary, "--fake"], {
-  env: {
-    ...process.env,
-    TERM: "xterm-256color",
-    TUIMSG_HOME: directory,
-    TUIMSG_FAKE_LOG: requestLog,
-  },
+  env,
   terminal: {
     cols: 80,
     rows: 24,
@@ -124,6 +122,9 @@ try {
   assert.equal(await child.exited, 0, "the terminal session must exit cleanly");
   assert(output.includes("\x1b[?1049h"), "the application must enter the alternate screen");
   assert(output.includes("\x1b[?1049l"), "the application must restore the terminal");
+  const tint = output.lastIndexOf("\x1b]11;rgb:");
+  assert(tint >= 0, "the terminal's default colors must follow the theme while the app runs");
+  assert(output.indexOf("\x1b]110\x07\x1b]111\x07", tint) > tint, "quitting must give the terminal its own colors back");
   assert(!output.includes("memory leak detected"), "keyboard listeners must not accumulate");
   await mkdir(artifacts, { recursive: true });
   await writeFile(join(artifacts, "session.ansi"), output);

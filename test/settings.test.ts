@@ -2,7 +2,7 @@ import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { chooseTheme, loadSettings, saveSettings, themeNeedsDetection } from "../src/settings.ts";
+import { chooseTheme, loadSettings, saveSettings } from "../src/settings.ts";
 
 async function directory(): Promise<string> {
   return mkdtemp(join(tmpdir(), "tuimsg-settings-"));
@@ -43,12 +43,5 @@ describe("settings", () => {
     expect(chooseTheme({}, "light", "dark")).toBe("light");
     expect(chooseTheme({}, undefined, "light")).toBe("light");
     expect(chooseTheme({ TUIMSG_THEME: "neon" }, undefined, undefined)).toBe("dark");
-  });
-
-  it("asks the terminal only when its answer would be used", () => {
-    expect(themeNeedsDetection({}, undefined)).toBe(true);
-    expect(themeNeedsDetection({}, "dark")).toBe(false);
-    expect(themeNeedsDetection({ TUIMSG_THEME: "light" }, undefined)).toBe(false);
-    expect(themeNeedsDetection({ TUIMSG_THEME: "auto" }, "dark")).toBe(true);
   });
 });

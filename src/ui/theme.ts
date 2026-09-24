@@ -70,9 +70,14 @@ export function currentTheme(): ThemeName {
   return current;
 }
 
-// The canvas as a CSS color, for filling transparent pixels in pictures.
+// A palette entry as an exact color, for what is drawn outside Ink: the fill behind
+// transparent pixels, and the terminal's own default colors.
+export function paletteHex(key: keyof Swatches, theme: ThemeName = current): string {
+  return xtermHex(swatchesFor(theme)[key]);
+}
+
 export function canvasHex(theme: ThemeName = current): string {
-  return xtermHex(swatchesFor(theme).canvas);
+  return paletteHex("canvas", theme);
 }
 
 export function onThemeChange(listener: (theme: ThemeName) => void): () => void {

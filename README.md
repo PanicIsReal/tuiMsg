@@ -55,6 +55,7 @@ Things that behave differently in a remote terminal:
 - **Links:** links are clickable: hold `Ctrl` and click one to open it in your browser. Windows Terminal supports this even while `tuimsg` uses the mouse. `o` on a message with a link copies the link to your clipboard, since a browser started on the Mac would open there, not in front of you. In a local session on the Mac, `o` opens it in your default browser.
 - **Attachments:** files live on the Mac. `o` and `s` save a copy under `~/.config/tuimsg/attachments` and show its path; fetch it with `scp your-mac:<path> .`. In a local session on the Mac, `o` opens the original in its app.
 - **Read state:** leaving a conversation open marks new messages in it as read, even when your terminal is minimized or tmux is detached.
+- **Window edges:** Windows Terminal draws padding around the text grid, plus a sliver where the window is not a whole number of rows and columns. `tuimsg` colors them to match the theme while it runs. To remove the padding, set it to 0 under **Settings → your profile → Appearance → Padding**.
 - **Image previews:** Windows Terminal 1.22 and later shows full-resolution photos through sixel. `tuimsg` asks the terminal at startup whether it supports sixel and how many pixels a cell holds, so this also works over SSH. Older Windows Terminal releases, tmux without sixel support, and terminals that don't answer get color half-block previews. See [Images](#images).
 
 Output is incremental, so a keystroke usually redraws only the lines that changed. Animated GIFs keep redrawing while they are on screen, which uses more bandwidth on slow links.
@@ -74,6 +75,8 @@ Conversations are on the left; the newest is at the top, a blue dot marks unread
 Press `Shift+L` outside the composer to switch between a light and a dark theme. The choice is saved in `~/.config/tuimsg/settings.json` (under `TUIMSG_HOME` when set). Until you choose, `tuimsg` asks the terminal for its background color at startup and matches it, falling back to dark when the terminal does not answer. `TUIMSG_THEME=light`, `dark`, or `auto` overrides the saved choice.
 
 Both themes use the xterm 256-color palette, so an SSH session without truecolor draws exactly the same colors as a local one.
+
+While `tuimsg` runs, the terminal's own default colors follow the theme (OSC 10 and 11). Terminals paint their padding, and the strip left over when a window is not a whole number of rows and columns, in that default color rather than the app's, so without this a light theme would sit in a black frame. Quitting restores the colors the terminal reported at startup, then asks it to return to its profile's colors (OSC 110 and 111). If the SSH connection drops first, that tab keeps the theme's colors until you run `tuimsg` again and quit, or open a new tab.
 
 ## Keyboard controls
 

@@ -65,7 +65,18 @@ describe("telling a light terminal from a dark one", () => {
     // Saturated blue is dark to the eye even with one channel at full.
     expect(parseProbeReplies("\x1b]11;rgb:0000/0000/ffff\x07").background).toBe("dark");
     expect(parseProbeReplies("]11;rgb:ffff/ffff/ffff\\").background).toBe("light");
+    expect(parseProbeReplies("\x1b]11;#fff\x07").background).toBe("light");
+    expect(parseProbeReplies("\x1b]11;#1e1e1e\x07").background).toBe("dark");
     expect(parseProbeReplies(WINDOWS_TERMINAL).background).toBeUndefined();
+  });
+
+  it("keeps the reported colors to hand back, in the terminal's own notation", () => {
+    expect(parseProbeReplies(`\x1b]10;rgb:cccc/cccc/cccc\x1b\\\x1b]11;rgb:0c0c/0c0c/0c0c\x1b\\${WINDOWS_TERMINAL}`).colors)
+      .toEqual({ foreground: "rgb:cccc/cccc/cccc", background: "rgb:0c0c/0c0c/0c0c" });
+    expect(parseProbeReplies("]10;#ccc\x07]11;#0c0c0c\x07").colors).toEqual({ foreground: "#ccc", background: "#0c0c0c" });
+    // Nothing else is echoed back into the terminal.
+    expect(parseProbeReplies("\x1b]11;rgb:00/00/00;\x1b[2J\x07").colors).toBeUndefined();
+    expect(parseProbeReplies("\x1b]11;black\x07").colors).toBeUndefined();
   });
 });
 
@@ -75,7 +86,7 @@ describe("probing the terminal", () => {
     const started = Date.now();
     const replies = await probeTerminal(input as never, output as never, 5_000);
     expect(Date.now() - started).toBeLessThan(1_000);
-    expect(written).toEqual(["\x1b[16t\x1b[14t\x1b[c"]);
+    expect(written).toEqual(["\x1b]10;?\x07\x1b]11;?\x07\x1b[16t\x1b[14t\x1b[c"]);
     expect(replies.cell).toEqual({ width: 10, height: 20 });
     expect(replies.attributes).toContain(4);
     expect(input.modes).toEqual([true, false]);
@@ -89,32 +100,30 @@ describe("probing the terminal", () => {
     expect(input.read()).toBeNull();
   });
 
-  it("asks for the background only when told to, and keeps its reply out of typed keys", async () => {
-    const light = "\x1b]11;rgb:ffff/ffff/ffff\x1b\\";
-    const { input, output, written } = fakeTerminal((_, stream) => setTimeout(() => stream.write(`${light}${WINDOWS_TERMINAL}j`), 5));
-    const replies = await probeTerminal(input as never, output as never, 5_000, { background: true });
-    expect(written).toEqual(["\x1b]11;?\x07\x1b[16t\x1b[14t\x1b[c"]);
+  it("reads the default colors and keeps their replies out of typed keys", async () => {
+    const colors = "\x1b]10;rgb:0000/0000/0000\x1b\\\x1b]11;rgb:ffff/ffff/ffff\x1b\\";
+    const { input, output } = fakeTerminal((_, stream) => setTimeout(() => stream.write(`${colors}${WINDOWS_TERMINAL}j`), 5));
+    const replies = await probeTerminal(input as never, output as never, 5_000);
     expect(replies.background).toBe("light");
+    expect(replies.colors).toEqual({ foreground: "rgb:0000/0000/0000", background: "rgb:ffff/ffff/ffff" });
     expect(replies.cell).toEqual({ width: 10, height: 20 });
     expect(String(input.read())).toBe("j");
   });
 
   it.each([
-    ["without its ESC", "]11;rgb:1e1e/1e1e/1e1e\\"],
-    ["in a format it does not read", "\x1b]11;#1e1e1e\x07"],
-  ])("drops a background reply %s", async (_, reply) => {
+    ["without its ESC", "]10;rgb:cccc/cccc/cccc\\]11;rgb:1e1e/1e1e/1e1e\\"],
+    ["in a format it does not read", "\x1b]10;white\x07\x1b]11;black\x07"],
+  ])("drops color replies %s", async (_, reply) => {
     const { input, output } = fakeTerminal((_, stream) => setTimeout(() => stream.write(`${reply}${WINDOWS_TERMINAL}`), 5));
-    await probeTerminal(input as never, output as never, 5_000, { background: true });
+    await probeTerminal(input as never, output as never, 5_000);
     expect(input.read()).toBeNull();
   });
 
-  it("probes for the theme even where pictures need no probe", async () => {
+  it("probes even where pictures need no answer, for the theme and the colors to restore", async () => {
     const { input, output, written } = fakeTerminal((_, stream) => setTimeout(() => stream.write("\x1b]11;rgb:ffff/ffff/ffff\x07\x1b[?62;22c"), 5));
-    expect(await detectTerminal(input as never, output as never, { TUIMSG_IMAGES: "blocks" }, { theme: true })).toEqual({ graphics: { protocol: "blocks", cell: { width: 10, height: 20 } }, background: "light" });
+    expect(await detectTerminal(input as never, output as never, { TUIMSG_IMAGES: "blocks" }))
+      .toEqual({ graphics: { protocol: "blocks", cell: { width: 10, height: 20 } }, colors: { background: "rgb:ffff/ffff/ffff" }, background: "light" });
     expect(written).toHaveLength(1);
-    const quiet = fakeTerminal(() => undefined);
-    expect(await detectTerminal(quiet.input as never, quiet.output as never, { TUIMSG_IMAGES: "blocks" })).toEqual({ graphics: { protocol: "blocks", cell: { width: 10, height: 20 } } });
-    expect(quiet.written).toEqual([]);
   });
 
   it("gives up on a silent terminal", async () => {

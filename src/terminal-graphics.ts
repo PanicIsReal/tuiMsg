@@ -1,24 +1,26 @@
 // Picks how pictures are drawn and which theme suits the terminal. Kitty-protocol terminals
 // are recognised from the environment; others are asked whether they speak sixel (DA1
 // attribute 4) and how many pixels a cell holds (CSI 16 t, or CSI 14 t divided by the grid).
-// Anything else, and any terminal that stays silent, gets half-block cells. The background
-// color (OSC 11) tells a light terminal from a dark one.
+// Anything else, and any terminal that stays silent, gets half-block cells. The default
+// colors (OSC 10 and 11) tell a light terminal from a dark one, and are put back on exit.
+import type { TerminalColors } from "./terminal-colors.ts";
 
 export type GraphicsProtocol = "kitty" | "sixel" | "blocks";
 export type CellSize = { width: number; height: number };
 export type Graphics = { protocol: GraphicsProtocol; cell: CellSize };
-export type ProbeReplies = { attributes?: number[]; cell?: CellSize; textArea?: CellSize; background?: "light" | "dark" };
+export type ProbeReplies = { attributes?: number[]; cell?: CellSize; textArea?: CellSize; colors?: TerminalColors; background?: "light" | "dark" };
 
 // Windows Terminal and the VT340 lay sixels out on 10×20 pixel cells.
 const VT340_CELL: CellSize = { width: 10, height: 20 };
-const QUERY = "\x1b[16t\x1b[14t\x1b[c";
-const BACKGROUND_QUERY = "\x1b]11;?\x07";
+// Terminals answer in order, and every one answers DA1, so it goes last and marks the end.
+const QUERY = "\x1b]10;?\x07\x1b]11;?\x07\x1b[16t\x1b[14t\x1b[c";
 // Windows Terminal 1.22 previews before 1.22.2702 dropped the ESC from replies relayed through
 // ConPTY (microsoft/terminal#17813), so it is optional; otherwise the rest would reach Ink as keys.
-// A background reply is dropped whatever its format, even one not understood below.
-const REPLY = /\x1b?\[\?[\d;]*c|\x1b?\[[46];\d+;\d+t|\x1b?\]11;[^\x07\x1b\\]{0,64}(?:\x07|\x1b?\\)?/g;
+// A color reply is dropped whatever its format, even one not understood below.
+const REPLY = /\x1b?\[\?[\d;]*c|\x1b?\[[46];\d+;\d+t|\x1b?\]1[01];[^\x07\x1b\\]{0,64}(?:\x07|\x1b?\\)?/g;
 const ATTRIBUTES = /\x1b?\[\?([\d;]*)c/;
-const BACKGROUND = /\x1b?\]11;rgba?:([\da-f]{1,4})\/([\da-f]{1,4})\/([\da-f]{1,4})/i;
+// Only specs a terminal would take back unchanged: rgb:, rgba: and #hex.
+const COLOR = /\x1b?\](1[01]);(rgba?:[\da-f]{1,4}(?:\/[\da-f]{1,4}){2,3}|#(?:[\da-f]{3}){1,4})(?=\x07|\x1b?\\)/gi;
 
 export function kittyFromEnvironment(env: NodeJS.ProcessEnv): boolean {
   // TERM survives SSH; the TERM_PROGRAM and KITTY_* variables usually do not.
@@ -33,13 +35,23 @@ export function parseProbeReplies(text: string): ProbeReplies {
   if (cell) replies.cell = { height: Number(cell[1]), width: Number(cell[2]) };
   const area = /\x1b?\[4;(\d+);(\d+)t/.exec(text);
   if (area) replies.textArea = { height: Number(area[1]), width: Number(area[2]) };
-  const background = BACKGROUND.exec(text);
-  if (background) {
-    // Channels come as 1 to 4 hex digits; scale each to 0..1 before weighing brightness.
-    const [red, green, blue] = [background[1]!, background[2]!, background[3]!].map((hex) => Number.parseInt(hex, 16) / (16 ** hex.length - 1));
+  for (const [, code, spec] of text.matchAll(COLOR)) {
+    replies.colors = { ...replies.colors, [code === "10" ? "foreground" : "background"]: spec! };
+  }
+  const channels = replies.colors?.background ? colorChannels(replies.colors.background) : undefined;
+  if (channels) {
+    const [red, green, blue] = channels;
     replies.background = 0.2126 * red! + 0.7152 * green! + 0.0722 * blue! > 0.5 ? "light" : "dark";
   }
   return replies;
+}
+
+// Red, green and blue from 0 to 1. Channels come as 1 to 4 hex digits each.
+function colorChannels(spec: string): number[] {
+  const hex = spec.startsWith("#")
+    ? Array.from({ length: 3 }, (_, index) => spec.slice(1).slice(index * (spec.length - 1) / 3, (index + 1) * (spec.length - 1) / 3))
+    : spec.slice(spec.indexOf(":") + 1).split("/").slice(0, 3);
+  return hex.map((part) => Number.parseInt(part, 16) / (16 ** part.length - 1));
 }
 
 // A sixel is sized in pixels but must cover its placeholder cells exactly, so an unknown
@@ -61,7 +73,7 @@ function usableCell(cell: CellSize | undefined): CellSize | undefined {
 }
 
 // Asks the terminal before Ink owns stdin. Keys typed meanwhile go back to the stream.
-export function probeTerminal(input: NodeJS.ReadStream, output: NodeJS.WriteStream, timeoutMs = 1_500, options: { background?: boolean } = {}): Promise<ProbeReplies> {
+export function probeTerminal(input: NodeJS.ReadStream, output: NodeJS.WriteStream, timeoutMs = 1_500): Promise<ProbeReplies> {
   if (!input.isTTY || !output.isTTY || typeof input.setRawMode !== "function") return Promise.resolve({});
   const wasRaw = input.isRaw;
   input.setRawMode(true);
@@ -85,15 +97,13 @@ export function probeTerminal(input: NodeJS.ReadStream, output: NodeJS.WriteStre
     };
     timer = setTimeout(finish, timeoutMs);
     input.on("readable", onReadable);
-    output.write(options.background ? BACKGROUND_QUERY + QUERY : QUERY);
+    output.write(QUERY);
   });
 }
 
-// Probes only when something depends on the answer: sixel support, or the theme to start in.
-export async function detectTerminal(input: NodeJS.ReadStream, output: NodeJS.WriteStream, env: NodeJS.ProcessEnv = process.env, options: { theme?: boolean } = {}): Promise<{ graphics: Graphics; background?: "light" | "dark" }> {
-  const forced = env.TUIMSG_IMAGES?.toLowerCase();
-  const graphicsProbe = forced !== "blocks" && forced !== "kitty" && !(forced !== "sixel" && kittyFromEnvironment(env));
-  const replies = graphicsProbe || options.theme ? await probeTerminal(input, output, undefined, { background: options.theme ?? false }) : {};
+// Every start probes: besides pictures and the theme, the replies hold the colors to restore.
+export async function detectTerminal(input: NodeJS.ReadStream, output: NodeJS.WriteStream, env: NodeJS.ProcessEnv = process.env): Promise<{ graphics: Graphics; colors: TerminalColors; background?: "light" | "dark" }> {
+  const replies = await probeTerminal(input, output);
   const graphics = chooseGraphics(env, replies, { columns: output.columns ?? 0, rows: output.rows ?? 0 });
-  return replies.background ? { graphics, background: replies.background } : { graphics };
+  return { graphics, colors: replies.colors ?? {}, ...(replies.background ? { background: replies.background } : {}) };
 }

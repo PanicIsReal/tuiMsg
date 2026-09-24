@@ -29,13 +29,16 @@ await writeFile(fixturePath, JSON.stringify(fixture));
 const pause = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 const results: string[] = [];
 try {
-  // "sixel" answers the startup probe the way Windows Terminal does (DA1 attribute 4, 10×20 cells).
+  // "sixel" answers the startup probe the way Windows Terminal does (DA1 attribute 4, 10×20 cells,
+  // and its default Campbell colors).
+  const CAMPBELL = "\x1b]10;rgb:cccc/cccc/cccc\x1b\\\x1b]11;rgb:0c0c/0c0c/0c0c\x1b\\";
   for (const mode of ["ansi", "kitty", "sixel"] as const) {
     const native = mode === "kitty";
     let output = "";
     let answered = false;
     const decoder = new TextDecoder();
-    const env: NodeJS.ProcessEnv = { ...process.env, TERM: native ? "xterm-kitty" : "xterm-256color", TERM_PROGRAM: "", TUIMSG_FAKE_FIXTURE: fixturePath, TUIMSG_HOME: join(directory, mode) };
+    const env: NodeJS.ProcessEnv = { ...process.env, TERM: native ? "xterm-kitty" : "xterm-256color", FORCE_COLOR: "2", TERM_PROGRAM: "", TUIMSG_FAKE_FIXTURE: fixturePath, TUIMSG_HOME: join(directory, mode) };
+    delete env.NO_COLOR;
     delete env.KITTY_WINDOW_ID;
     delete env.TMUX;
     delete env.TUIMSG_IMAGES;
@@ -43,7 +46,7 @@ try {
       output += decoder.decode(bytes, { stream: true });
       if (mode === "sixel" && !answered && output.includes("\x1b[16t\x1b[14t\x1b[c")) {
         answered = true;
-        terminal.write("\x1b[6;20;10t\x1b[4;700;1000t\x1b[?61;4;6;7;14;21;22;23;24;28;32;42c");
+        terminal.write(`${CAMPBELL}\x1b[6;20;10t\x1b[4;700;1000t\x1b[?61;4;6;7;14;21;22;23;24;28;32;42c`);
       }
     } } });
     const terminal = child.terminal;
@@ -93,6 +96,7 @@ try {
       while (child.exitCode === null && Date.now() < deadline) await pause(25);
       assert.equal(child.exitCode, 0, "image viewer must quit cleanly");
       assert(output.includes("\x1b[?1049l"), "alternate screen must be restored");
+      if (mode === "sixel") assert(output.includes("\x1b]10;rgb:cccc/cccc/cccc\x07\x1b]11;rgb:0c0c/0c0c/0c0c\x07\x1b]110\x07\x1b]111\x07"), "the terminal's reported colors must be restored");
       if (native) assert(output.includes("a=d,d=I"), "owned native images must be deleted");
       results.push(mode === "kitty" ? "native-kitty-protocol" : mode === "sixel" ? "sixel-strips" : "ansi-pixels");
     } finally {
