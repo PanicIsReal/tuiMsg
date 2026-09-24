@@ -119,12 +119,12 @@ export function ImagePreview(props: ImagePreviewProps) {
 
 export function ImageViewer(props: { attachment: Attachment; session: Session; width: number; height: number }) {
   return (
-    <Box width={props.width} height={props.height} borderStyle="round" borderColor={colors.focus} borderBackgroundColor={colors.panel}
-      backgroundColor={colors.panel} paddingX={1} flexDirection="column">
-      <Text wrap="truncate" color={colors.text}>{props.attachment.name}</Text>
+    <Box width={props.width} height={props.height} borderStyle="round" borderColor={colors.faint} borderBackgroundColor={colors.canvas}
+      backgroundColor={colors.canvas} paddingX={1} flexDirection="column">
+      <Text wrap="truncate" color={colors.secondary}>{props.attachment.name}</Text>
       <ImagePreview key={props.attachment.guid} attachment={props.attachment} loadAttachment={props.session.loadAttachment}
         width={Math.max(1, props.width - 4)} height={Math.max(1, props.height - 4)} />
-      <Text color={colors.secondary}>o open original · s save · Esc close</Text>
+      <Text color={colors.subtle}>o open original · s save · esc close</Text>
     </Box>
   );
 }

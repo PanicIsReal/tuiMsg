@@ -69,7 +69,7 @@ function AppContent({ session }: AppProps) {
             <Box width={laneWidth} flexDirection="column" height={size.height - 1}>
               {selected ? (
                 <>
-                  <Transcript chatGuid={selected.guid} title={selected.title} messages={messages}
+                  <Transcript chatGuid={selected.guid} title={selected.title} subtitle={chatSubtitle(selected)} group={selected.kind === "group"} messages={messages}
                     height={size.height - 1 - composerHeight(draftFor(state, selected.guid), input.kind === "composer")} width={laneWidth}
                     typing={Boolean(state.typing.get(selected.guid))} focused={input.kind === "transcript"}
                     cursor={cursor} history={history} readError={state.readPending.get(selected.guid) ?? null}
@@ -79,6 +79,7 @@ function AppContent({ session }: AppProps) {
                     onViewAttachment={(attachment) => { if (input.kind === "list" || input.kind === "transcript" || input.kind === "composer") viewAttachment(session, attachment, { kind: "transcript", chatGuid: selected.guid }); }}
                     onRetryRead={() => session.act({ type: "retry-read", chatGuid: selected.guid })} />
                   <Composer key={selected.guid} draft={draftFor(state, selected.guid)} service={selected.service} focused={input.kind === "composer"}
+                    replyingTo={replyLabel(draftFor(state, selected.guid).replyTo, messages)}
                     onChange={(text) => session.act({ type: "draft-set", chatGuid: selected.guid, text })}
                     onSubmit={() => session.act({ type: "send", chatGuid: selected.guid })}
                     onEscape={() => session.act({ type: "input", input: { kind: "transcript", chatGuid: selected.guid } })} />
@@ -103,7 +104,7 @@ function AppContent({ session }: AppProps) {
           </Box>
         ) : null}
       </Box>
-      <StatusBar state={state} narrow={narrow} />
+      <StatusBar state={state} narrow={narrow} width={size.width} />
       <Overlay input={input} state={state} messages={messages} session={session} width={size.width} height={size.height} />
     </Box>
   );
@@ -277,15 +278,48 @@ function paneFor(input: InputMode): Pane {
 
 const CONNECTION_LABELS = { connecting: "starting imsg", online: "online", offline: "imsg stopped", "no-access": "no access" } as const;
 
-function StatusBar(props: { state: ReturnType<Session["getSnapshot"]>; narrow: boolean }) {
-  const connectionColor = props.state.connection === "online" ? colors.outgoingSms
-    : props.state.connection === "no-access" ? colors.failed : colors.warning;
+// The keys that matter where the focus is, key bright and action quiet.
+const HINTS: Record<string, [string, string][]> = {
+  list: [["↵", "open"], ["/", "search"], ["n", "new"], ["?", "help"]],
+  transcript: [["i", "write"], ["r", "reply"], ["t", "react"], ["y", "copy"], ["?", "help"]],
+  composer: [["↵", "send"], ["^J", "new line"], ["esc", "done"]],
+  image: [["o", "open"], ["s", "save"], ["esc", "close"]],
+};
+
+function StatusBar(props: { state: ReturnType<Session["getSnapshot"]>; narrow: boolean; width: number }) {
+  const { connection, notice, input } = props.state;
+  const connectionColor = connection === "online" ? colors.sms : connection === "no-access" ? colors.failed : colors.warning;
+  const hints = HINTS[input.kind] ?? [];
+  const room = Math.max(0, props.width - 24);
+  const shown: [string, string][] = [];
+  let used = 0;
+  for (const hint of props.narrow ? hints.slice(0, 3) : hints) {
+    used += hint[0].length + hint[1].length + 3;
+    if (used > room) break;
+    shown.push(hint);
+  }
   return (
-    <Box height={1} paddingLeft={1} paddingRight={1} flexDirection="row" justifyContent="space-between">
-      <Text><Text color={connectionColor}>● {CONNECTION_LABELS[props.state.connection]}</Text><Text color={colors.secondary}>{bridgeAvailable(props.state.capabilities) ? " · bridge" : ""}</Text></Text>
-      <Text><Text color={props.state.notice?.kind === "error" ? colors.failed : colors.secondary}>{props.state.notice?.text ?? (props.narrow ? "? help" : "Tab panes · ? help · q quit")}</Text></Text>
+    <Box height={1} paddingLeft={2} paddingRight={2} flexDirection="row" justifyContent="space-between" backgroundColor={colors.sidebar}>
+      <Text wrap="truncate-end"><Text color={connectionColor}>●</Text><Text color={colors.subtle}> {CONNECTION_LABELS[connection]}{bridgeAvailable(props.state.capabilities) && !props.narrow ? " · bridge" : ""}</Text></Text>
+      {notice
+        ? <Text wrap="truncate-end" color={notice.kind === "error" ? colors.failed : colors.secondary}>{notice.text}</Text>
+        : <Text wrap="truncate-end">{shown.map(([key, action], index) => <Text key={key}>{index ? "   " : ""}<Text color={colors.text}>{key}</Text><Text color={colors.subtle}> {action}</Text></Text>)}</Text>}
     </Box>
   );
+}
+
+function chatSubtitle(chat: Chat): { text: string; color: string } {
+  const service = chat.service === "SMS" ? "SMS" : "iMessage";
+  const color = chat.service === "SMS" ? colors.sms : colors.accent;
+  return { text: chat.kind === "group" && chat.participants.length > 1 ? `${service} · ${chat.participants.length} people` : service, color };
+}
+
+function replyLabel(guid: MessageGuid | null, messages: Message[]): string | undefined {
+  if (!guid) return undefined;
+  const message = messages.find((item) => item.guid === guid);
+  if (message?.kind !== "text") return "Replying";
+  const body = message.body.replace(/\uFFFC/g, "").replace(/\s+/g, " ").trim() || message.attachments[0]?.name || "a message";
+  return `${message.isFromMe ? "You" : message.from.contact?.displayName ?? message.from.address}: ${body}`;
 }
 
 function Overlay(props: {

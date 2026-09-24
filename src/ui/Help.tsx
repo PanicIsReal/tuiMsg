@@ -1,21 +1,33 @@
 import { Box, Text } from "ink";
 import { colors } from "./theme.ts";
 
-const LINES = [
-  "j/k ↑/↓ move · Enter open/send",
-  "i compose · Esc back · Tab panes",
-  "Ctrl+J newline · Enter sends",
-  "y copy · r reply · t react",
-  "a files · v image · o open · s save",
-  "! retry · g older · m retry read",
-  "/ search · n new · PgUp/PgDn scroll",
-  "? help · q quit",
-] as const;
+const KEYS: [string, string][] = [
+  ["j k", "move"], ["↵", "open · send"],
+  ["i", "write"], ["esc", "back"],
+  ["tab", "next pane"], ["^J", "new line"],
+  ["r", "reply"], ["t", "react"],
+  ["y", "copy"], ["v", "view image"],
+  ["a", "attachments"], ["o s", "open · save"],
+  ["g", "older"], ["!", "retry send"],
+  ["/", "search"], ["n", "new chat"],
+  ["PgUp", "scroll"], ["m", "retry read"],
+  ["?", "help"], ["q", "quit"],
+];
+const KEY = 5;
+const LABEL = 12;
 
+// Two columns of key and action when there is room, one otherwise.
 export function Help(props: { width: number; height: number }) {
-  return <Box borderStyle="round" borderBackgroundColor={colors.canvas} borderColor={colors.accent} backgroundColor={colors.panelRaised}
-    paddingX={1} flexDirection="column" width={props.width} height={props.height} maxWidth="100%" maxHeight="100%" overflow="hidden">
-    <Box height={1} flexShrink={0}><Text bold color={colors.text}>Keyboard shortcuts</Text></Box>
-    {LINES.map(line => <Box key={line} height={1} flexShrink={0}><Text wrap="truncate-end" color={colors.text}>{line}</Text></Box>)}
+  const columns = props.width - 6 >= (KEY + LABEL) * 2 + 3 ? 2 : 1;
+  const rows: [string, string][][] = [];
+  for (let index = 0; index < KEYS.length; index += columns) rows.push(KEYS.slice(index, index + columns));
+  return <Box borderStyle="round" borderBackgroundColor={colors.canvas} borderColor={colors.faint} backgroundColor={colors.raised}
+    paddingX={2} flexDirection="column" width={props.width} height={props.height} maxWidth="100%" maxHeight="100%" overflow="hidden">
+    <Box height={1} flexShrink={0} marginBottom={props.height > 13 ? 1 : 0}><Text bold color={colors.text}>Keyboard shortcuts</Text></Box>
+    {rows.map((row) => <Box key={row[0]![0]} height={1} flexShrink={0} flexDirection="row">
+      {row.map(([key, label], index) => <Box key={key} width={KEY + LABEL + (index ? 0 : 3)} flexShrink={0}>
+        <Box width={KEY} flexShrink={0}><Text color={colors.text}>{key}</Text></Box><Text wrap="truncate-end" color={colors.subtle}>{label}</Text>
+      </Box>)}
+    </Box>)}
   </Box>;
 }

@@ -500,7 +500,7 @@ await setup.flush();
 frame = setup.captureCharFrame();
 saveFrame("narrow-help-50x16.txt", frame);
 assert.match(frame, /Keyboard shortcuts/);
-assert.match(frame, /q quit/);
+assert.match(frame, /q\s+quit/);
 session.act({ type: "input", input: { kind: "new-chat", addresses: "", text: "", service: "iMessage", field: "addresses", busy: false, error: null } });
 await setup.flush();
 frame = setup.captureCharFrame();

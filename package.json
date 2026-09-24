@@ -17,7 +17,7 @@
     "test": "vitest run && bun scripts/ui-verify.tsx",
     "test:unit": "vitest run",
     "test:ui": "bun scripts/ui-verify.tsx",
-    "test:colors": "env -u NO_COLOR FORCE_COLOR=2 bun scripts/color-verify.tsx .audit/colors",
+    "test:colors": "env -u NO_COLOR FORCE_COLOR=2 TERM=xterm-256color bun scripts/color-verify.tsx .audit/colors",
     "smoke": "bun scripts/pty-smoke.ts",
     "smoke:images": "bun scripts/image-smoke.ts",
     "build": "bun build src/cli.tsx --target bun --packages external --outfile dist/cli.js",

@@ -9,8 +9,11 @@ export type ListRowProps = {
   preview: string;
   time: string;
   unread: boolean;
-  active: boolean;
+  // The row under the cursor, or the open conversation while the list is not focused.
   cursor: boolean;
+  // The open conversation, marked faintly while the cursor is elsewhere in the list.
+  active: boolean;
+  focused: boolean;
   sms: boolean;
   width: number;
   onOpen: () => void;
@@ -23,32 +26,39 @@ export const ListRow = memo(function ListRow(props: ListRowProps) {
     props.onOpen();
     return true;
   });
-  const contentWidth = Math.max(1, props.width - 5);
-  const marker = props.cursor ? "›" : props.unread ? "●" : props.active ? "·" : " ";
+  // Column 0 carries the row's state: a bar for the selection, else a dot for unread, else a
+  // faint bar for the open conversation.
+  const dot = props.unread && !props.cursor;
+  const bar = props.cursor || (props.active && !dot) ? "▎" : " ";
+  const barColor = props.cursor ? props.focused ? colors.accent : colors.subtle : colors.faint;
+  const contentWidth = Math.max(1, props.width - 3);
   const service = props.sms ? "SMS " : "";
-  const titleWidth = Math.max(1, contentWidth - props.time.length - service.length - 3);
+  const titleWidth = Math.max(1, contentWidth - props.time.length - service.length - 1);
   const title = (props.title || "Unknown").replace(/[\r\n\t]/g, " ");
   const preview = normalizePreview(props.preview);
   return (
-    <Box ref={element} height={3} flexShrink={0} width="100%" paddingLeft={1} paddingRight={1} flexDirection="column">
-      <Box height={1} flexShrink={0} flexDirection="row" justifyContent="space-between">
-        <Text wrap="truncate-end">
-          <Text color={props.cursor ? colors.text : props.unread ? colors.text : colors.subtle}>{marker} </Text>
-          {props.unread || props.cursor ? <Text bold color={colors.text}>{truncateEnd(title, titleWidth)}</Text> : <Text color={colors.text}>{truncateEnd(title, titleWidth)}</Text>}
-        </Text>
-        <Text wrap="truncate-end"><Text color={colors.sms}>{service}</Text><Text color={colors.secondary}>{props.time}</Text></Text>
+    <Box ref={element} height={3} flexShrink={0} width="100%" flexDirection="column">
+      <Box height={2} flexShrink={0} flexDirection="column" backgroundColor={props.cursor ? colors.raised : colors.sidebar}>
+        <Box height={1} flexShrink={0} flexDirection="row">
+          <Text color={dot ? colors.accent : barColor}>{dot ? "●" : bar} </Text>
+          <Box flexGrow={1} flexDirection="row" justifyContent="space-between" paddingRight={1}>
+            <Text wrap="truncate-end" bold={props.unread} color={colors.text}>{truncateEnd(title, titleWidth)}</Text>
+            <Text wrap="truncate-end"><Text color={colors.sms}>{service}</Text><Text color={props.unread ? colors.accent : colors.subtle}>{props.time}</Text></Text>
+          </Box>
+        </Box>
+        <Box height={1} flexShrink={0} flexDirection="row">
+          <Text color={barColor}>{bar} </Text>
+          <Text wrap="truncate-end" color={props.unread ? colors.secondary : colors.subtle}>{truncateEnd(preview, contentWidth)}</Text>
+        </Box>
       </Box>
-      <Text wrap="truncate-end">
-        <Text color={colors.secondary}>  {truncateEnd(preview, Math.max(1, contentWidth - 2))}</Text>
-      </Text>
     </Box>
   );
 });
 
 function normalizePreview(value: string): string {
-  const text = value.replace(/\uFFFC/g, "").replace(/[\r\n\t]+/g, " ").trim();
+  const text = value.replace(/￼/g, "").replace(/[\r\n\t]+/g, " ").trim();
   // Previews load after the list; an empty one is still on its way.
-  return text || (value.includes("\uFFFC") ? "Attachment" : "");
+  return text || (value.includes("￼") ? "Attachment" : "");
 }
 
 // Slice by code point so an emoji at the cut is dropped whole rather than split into "�".

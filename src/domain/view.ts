@@ -12,12 +12,16 @@ function dayKey(ms: number): string {
   return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
 }
 
-function dayLabel(ms: number): string {
-  return new Date(ms).toLocaleDateString(undefined, {
-    weekday: "long",
-    month: "short",
-    day: "numeric",
-  });
+// Relative for the last week, like Messages: Today, Yesterday, Monday, then Mon, Sep 22.
+export function dayLabel(ms: number, now = Date.now()): string {
+  const day = new Date(ms);
+  const start = (value: Date) => new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime();
+  const days = Math.round((start(new Date(now)) - start(day)) / 86_400_000);
+  if (days === 0) return "Today";
+  if (days === 1) return "Yesterday";
+  if (days > 1 && days < 7) return day.toLocaleDateString(undefined, { weekday: "long" });
+  if (day.getFullYear() === new Date(now).getFullYear()) return day.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+  return day.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
 export function foldTapbacks(messages: Message[]): ThreadRow[] {

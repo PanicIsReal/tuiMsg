@@ -11,7 +11,7 @@ describe("terminal palette", () => {
     try {
       chalk.level = level;
       const palette = paletteForColorLevel(level);
-      const output = renderToString(createElement(Box, { width: 12, height: 3, borderStyle: "round", borderColor: palette.border, borderBackgroundColor: palette.panel, backgroundColor: palette.panel }, createElement(Text, { color: palette.text }, "BODY")));
+      const output = renderToString(createElement(Box, { width: 12, height: 3, borderStyle: "round", borderColor: palette.faint, borderBackgroundColor: palette.sidebar, backgroundColor: palette.sidebar }, createElement(Text, { color: palette.text }, "BODY")));
       const cells = ansiCells(output);
       expect(cells.flat()).toHaveLength(36);
       for (const cell of cells.flat()) {
@@ -31,7 +31,7 @@ describe("terminal palette", () => {
       chalk.level = 2;
       expect(ansiCells(chalk.bgHex("#181B21")(" "))[0]?.[0]?.background).toBe("#005f5f");
       const palette = paletteForColorLevel(2);
-      const actual = ansiCells(chalk.bgHex(palette.panel)(" "))[0]?.[0]?.background;
+      const actual = ansiCells(chalk.bgHex(palette.sidebar)(" "))[0]?.[0]?.background;
       expect(actual).not.toBe("#005f5f");
       expect(actual?.slice(1, 3)).toBe(actual?.slice(3, 5));
     } finally { chalk.level = previous; }
