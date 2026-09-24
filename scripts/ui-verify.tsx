@@ -600,6 +600,35 @@ for (const [width, height, expected] of [[80, 24, "Messages"], [50, 16, "Message
   assert.match(frame, new RegExp(expected));
 }
 
+// Over SSH, keys typed quickly can arrive in one read. Each is still a command, text after
+// one that opens a field is typed into it, and a wheel sequence is never taken apart.
+setup.resize(120, 30);
+const openChat = [...state.chats.keys()][0]!;
+state = { ...state, input: { kind: "list" }, listCursor: openChat };
+for (const listener of listeners) listener();
+await setup.flush();
+app.stdin.write("jj");
+await setup.flush();
+assert.deepEqual(intents.slice(-2).map((intent) => intent.type), ["move-list", "move-list"], "two j's in one read must move twice");
+state = { ...state, selected: openChat, input: { kind: "transcript", chatGuid: openChat }, drafts: new Map(state.drafts).set(openChat, { text: "", replyTo: null }) };
+for (const listener of listeners) listener();
+await setup.flush();
+const intentsBeforeTyping = intents.length;
+app.stdin.write("iquick note\r");
+await setup.flush();
+assert.equal(session.getSnapshot().input.kind, "composer", "i must open the composer when text follows it in the same read");
+assert.equal(state.drafts.get(openChat)?.text, "quick note", "the text after i must land in the draft");
+assert.ok(!intents.slice(intentsBeforeTyping).some((intent) => intent.type === "send"), "an Enter that came with the text must not send it");
+assert.match(setup.captureCharFrame(), /› quick note/);
+state = { ...state, input: { kind: "tapback", chatGuid: openChat, messageGuid: firstMessage, choice: 0 } };
+for (const listener of listeners) listener();
+await setup.flush();
+const intentsBeforeWheel = intents.length;
+await setup.mockMouse.scroll(60, 10, "down");
+await setup.flush();
+assert.deepEqual(session.getSnapshot().input, { kind: "tapback", chatGuid: openChat, messageGuid: firstMessage, choice: 0 }, "a wheel sequence must not pick a reaction");
+assert.ok(intents.slice(intentsBeforeWheel).every((intent) => intent.type === "notice"), "a wheel sequence must not act as keys");
+
 state = { ...state, input: { kind: "composer", chatGuid: firstChat } };
 for (const listener of listeners) listener();
 setup.resize(32, 10);

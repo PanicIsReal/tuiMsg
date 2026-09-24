@@ -1,9 +1,9 @@
-import { MouseProvider } from "./mouse.tsx";
+import { isMouseSequence, MouseProvider } from "./mouse.tsx";
 import { Box, Text, useInput, useWindowSize, type Key } from "ink";
 import { ImageViewer } from "./ImagePreview.tsx";
 import { isImageAttachment } from "../attachments.ts";
 import { useMemo, useSyncExternalStore } from "react";
-import type { Attachment, Chat, InputMode, Message, Pane, Reaction, Session } from "../domain/model.ts";
+import type { AppState, Attachment, Chat, InputMode, Message, Pane, Reaction, Session } from "../domain/model.ts";
 import { bridgeAvailable, draftFor } from "../domain/model.ts";
 import type { MessageGuid } from "../domain/ids.ts";
 import { sortedChats } from "../domain/view.ts";
@@ -14,6 +14,7 @@ import { AttachmentModal, ConfirmModal, NewChatModal, ReactionModal, SearchModal
 import { Transcript } from "./Transcript.tsx";
 import { colors, currentTheme, setTheme, useTheme } from "./theme.ts";
 import { firstLink } from "../domain/links.ts";
+import { cleanText } from "../domain/text.ts";
 
 const REACTIONS: Reaction[] = ["love", "like", "dislike", "laugh", "emphasize", "question"];
 export type AppProps = { session: Session };
@@ -35,9 +36,26 @@ function AppContent({ session }: AppProps) {
   const narrow = size.width < 72;
   const tiny = size.width < 38 || size.height < 12;
 
-  useInput((input, key) => routeKey(keyEvent(input, key), {
-    state, chats, selected, messages, session, tiny,
-  }));
+  useInput((input, key) => {
+    // Keys go against the live state, which a key earlier in the same read may have changed.
+    const route = (text: string, event: Key) => {
+      const live = session.getSnapshot();
+      routeKey(keyEvent(text, event), { ...(live === state ? { state, chats, selected, messages } : derive(live)), session, tiny });
+    };
+    const characters = Array.from(input);
+    // Ink hands over a sequence it could not name without its escape ("[<65;9;4M" for the
+    // wheel); those are never keys to take apart.
+    const plain = !key.ctrl && !key.meta && !key.escape && !key.return && !key.tab && !input.startsWith("[") && !isMouseSequence(input);
+    if (characters.length < 2 || !plain || textField(session.getSnapshot().input)) { route(input, key); return; }
+    // Over SSH, keys typed quickly can arrive in one read, which Ink hands over as one string.
+    // Outside a field each is a command; once one opens a field, the rest is typed into it.
+    for (let index = 0; index < characters.length; index++) {
+      const mode = session.getSnapshot().input;
+      if (textField(mode)) { typeInto(mode, characters.slice(index).join(""), session); return; }
+      const character = characters[index]!;
+      route(character, { ...key, shift: character !== character.toLowerCase() });
+    }
+  });
 
   if (tiny) {
     return (
@@ -122,6 +140,29 @@ type RouteContext = {
   session: Session;
   tiny: boolean;
 };
+
+function derive(state: AppState): Pick<RouteContext, "state" | "chats" | "selected" | "messages"> {
+  return {
+    state, chats: sortedChats(state.chats, state.search),
+    selected: state.selected ? state.chats.get(state.selected) : undefined,
+    messages: state.selected ? state.messages.get(state.selected) ?? [] : [],
+  };
+}
+
+const textField = (mode: InputMode) => mode.kind === "composer" || mode.kind === "search" || mode.kind === "new-chat";
+
+// Text that arrived in the read that opened its field, which the field's own input was not
+// there yet to take. An Enter at its end is dropped rather than sending: the text shows, and
+// the next Enter sends it.
+function typeInto(mode: InputMode, text: string, session: Session): void {
+  const typed = cleanText(text.replace(/\r$/, ""));
+  const line = typed.replace(/\n/g, "");
+  if (!typed) return;
+  const state = session.getSnapshot();
+  if (mode.kind === "composer") session.act({ type: "draft-set", chatGuid: mode.chatGuid, text: draftFor(state, mode.chatGuid).text + typed });
+  else if (mode.kind === "search") session.act({ type: "search-set", text: state.search + line });
+  else if (mode.kind === "new-chat") session.act({ type: "input", input: { ...mode, [mode.field]: mode[mode.field] + (mode.field === "text" ? typed : line) } });
+}
 
 function routeKey(key: KeyEvent, context: RouteContext): void {
   const { state, session } = context;
