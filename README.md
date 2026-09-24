@@ -12,16 +12,24 @@ Browse conversations, search names and previews, read older messages, and compos
 
 - macOS 14 or newer, signed in to Messages.
 - [imsg](https://github.com/openclaw/imsg): `brew install steipete/tap/imsg`. `tuimsg` finds it on `PATH`, in `/opt/homebrew/bin`, or in `/usr/local/bin`; set `IMSG_PATH` to use another binary.
-- [Bun](https://bun.sh) 1.3.14 or newer on `PATH`, including in SSH sessions.
+- [Bun](https://bun.sh) 1.3.14 or newer on `PATH`, including in SSH sessions (`brew install oven-sh/bun/bun`). `tuimsg` runs on Bun, however it is installed.
+
+```sh
+npx tuimsg            # or bunx tuimsg: runs it without installing
+npm install -g tuimsg # or bun add -g tuimsg: installs the tuimsg command
+tuimsg --fake         # demo data, no Messages access needed
+```
+
+From a checkout:
 
 ```sh
 bun install
 bun run build
 ./bin/tuimsg          # your Messages
-./bin/tuimsg --fake   # demo data, no Messages access needed
+./bin/tuimsg --fake   # demo data
 ```
 
-From any directory, run `bun /path/to/tuiMsg/bin/tuimsg`, or link `bin/tuimsg` into a directory on your `PATH`. The command is `tuimsg` rather than `imsg` so it never shadows the imsg CLI it drives.
+The command is `tuimsg` rather than `imsg` so it never shadows the imsg CLI it drives.
 
 ## Permissions
 

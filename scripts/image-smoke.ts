@@ -8,6 +8,7 @@ import type { FakeImsgOptions } from "../src/imsg/fake.ts";
 
 // Attachments are files Messages stored on this Mac; imsg reports their paths.
 const directory = await mkdtemp(join(tmpdir(), "tuimsg-image-pty-"));
+const binary = resolve(process.argv[2] ?? "bin/tuimsg");
 const first = await sharp({ create: { width: 120, height: 60, channels: 3, background: "#427fd6" } }).png().toBuffer();
 const second = await sharp({ create: { width: 60, height: 120, channels: 3, background: "#e3a340" } }).jpeg().toBuffer();
 const stored = join(directory, "Messages", "Attachments");
@@ -42,7 +43,7 @@ try {
     delete env.KITTY_WINDOW_ID;
     delete env.TMUX;
     delete env.TUIMSG_IMAGES;
-    const child = spawn([process.execPath, resolve("bin/tuimsg"), "--fake"], { env, terminal: { cols: 100, rows: 35, data(terminal, bytes) {
+    const child = spawn([process.execPath, binary, "--fake"], { env, terminal: { cols: 100, rows: 35, data(terminal, bytes) {
       output += decoder.decode(bytes, { stream: true });
       if (mode === "sixel" && !answered && output.includes("\x1b[16t\x1b[14t\x1b[c")) {
         answered = true;

@@ -73,7 +73,10 @@ const plugins: BunPlugin = {
     }));
     // Every string-width import, Ink's included, goes through the remembering wrapper.
     build.onResolve({ filter: /^string-width$/ }, (args) => args.importer === rememberedWidth ? undefined : { path: rememberedWidth });
-    // Ink loads its DevTools bridge only with DEV=true, and that optional package is not installed.
+    // Ink connects to React DevTools, over the ws WebSocket client, only with DEV=true and
+    // react-devtools-core installed. Neither ships with the package, so Ink's DevTools modules
+    // are left empty and the bundle imports nothing but sharp.
+    build.onLoad({ filter: /[\\/]ink[\\/]build[\\/]devtools(?:-window-polyfill)?\.js$/ }, () => ({ contents: "export {};", loader: "js" }));
     build.onResolve({ filter: /^react-devtools-core$/ }, () => ({ path: "react-devtools-core", namespace: "stub" }));
     build.onLoad({ filter: /.*/, namespace: "stub" }, () => ({ contents: "export default {};", loader: "js" }));
   },
