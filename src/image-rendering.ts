@@ -61,7 +61,7 @@ export async function decodeImage(bytes: Uint8Array, columns: number, rows: numb
   } catch (error) {
     const heif = source.subarray(4, 8).toString() === "ftyp" && /heic|heix|hevc|hevx|mif1/.test(source.subarray(8, 40).toString());
     if (!heif || process.platform !== "darwin") throw error;
-    source = await convertHeic(source, signal);
+    source = await convertHeic(source, previewBound(activeGraphics(), columns, rows), signal);
     metadata = await sharp(source, options).metadata();
   }
   const sourceWidth = metadata.width;
@@ -125,13 +125,24 @@ function halfBlocks(data: Buffer, width: number, height: number, channels: numbe
   return lines.join("\n");
 }
 
-async function convertHeic(source: Buffer, signal?: AbortSignal): Promise<Buffer> {
+// The longest side, in pixels, a picture drawn in `columns` × `rows` cells can need, doubled
+// so the last resize still has detail to work from. Converting a HEIC photo at its own 4096
+// px meant writing and reading back a 25 MB PNG, about 1.5 s and 60 MB of memory, for a
+// preview 360 px wide.
+export function previewBound(graphics: Graphics, columns: number, rows: number): number {
+  if (graphics.protocol === "kitty") return 2560;
+  const cell = graphics.protocol === "sixel" ? graphics.cell : HALF_BLOCK_CELL;
+  return Math.min(4096, Math.max(256, 2 * Math.max(columns * cell.width, rows * cell.height)));
+}
+
+async function convertHeic(source: Buffer, bound: number, signal?: AbortSignal): Promise<Buffer> {
   const directory = await mkdtemp(join(tmpdir(), "imsg-preview-"));
   try {
     const input = join(directory, "source.heic");
     const output = join(directory, "preview.png");
     await writeFile(input, source, { mode: 0o600 });
-    await run("/usr/bin/sips", ["-s", "format", "png", "--resampleHeightWidthMax", "4096", input, "--out", output], { timeout: 15_000, maxBuffer: 64 * 1024, ...(signal ? { signal } : {}) });
+    // PNG keeps a sticker's transparency, for the canvas to show through.
+    await run("/usr/bin/sips", ["-s", "format", "png", "--resampleHeightWidthMax", String(bound), input, "--out", output], { timeout: 15_000, maxBuffer: 64 * 1024, ...(signal ? { signal } : {}) });
     return await readFile(output);
   } finally {
     await rm(directory, { recursive: true, force: true });

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import sharp from "sharp";
 import { createElement } from "react";
 import { render } from "ink";
-import { configureGraphics, decodeImage, deleteKittyImage, imageCellSize, kittyImage, supportsNativeImages, registerImage, repaintImages, cleanupImages } from "../src/image-rendering.ts";
+import { configureGraphics, decodeImage, deleteKittyImage, imageCellSize, kittyImage, previewBound, supportsNativeImages, registerImage, repaintImages, cleanupImages } from "../src/image-rendering.ts";
 
 describe("image rendering", () => {
   it.each(["png", "jpeg", "webp", "gif"] as const)("decodes real %s bytes into colored pixels, and a PNG for kitty", async format => {
@@ -71,6 +71,16 @@ describe("image rendering", () => {
   it("fits both portrait and landscape images in terminal cells", () => {
     expect(imageCellSize(100, 200, 20, 10)).toEqual({ width: 10, height: 10 });
     expect(imageCellSize(200, 100, 20, 10)).toEqual({ width: 20, height: 5 });
+  });
+
+  it("converts a HEIC photo at the size it is drawn, not its own", () => {
+    const cell = { width: 10, height: 20 };
+    // A 36 x 10 cell sixel preview is 360 x 200 px; twice that leaves detail for the resize.
+    expect(previewBound({ protocol: "sixel", cell }, 36, 10)).toBe(720);
+    // The full-screen viewer can need the photo's own size, up to 4096 px.
+    expect(previewBound({ protocol: "sixel", cell }, 207, 53)).toBe(4096);
+    expect(previewBound({ protocol: "blocks", cell }, 36, 10)).toBe(256);
+    expect(previewBound({ protocol: "kitty", cell }, 36, 10)).toBe(2560);
   });
 
   it("only selects native graphics on known terminals outside tmux", () => {
