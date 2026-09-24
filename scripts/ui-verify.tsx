@@ -20,6 +20,7 @@ const failedImageAttachment = { guid: "attachment-fail", name: "missing.png", mi
 let state: AppState = {
   ...emptyState(),
   connection: "online",
+  capabilities: { bridge: true },
   chatsStatus: "ready",
   chats: new Map([
     [firstChat, { guid: firstChat, kind: "dm", service: "iMessage", title: "Sam Rivera with a title long enough to truncate", participants: [friend], unreadCount: 2, muted: false, lastMessage: { body: "Can you bring the project notes tomorrow?", sentAt: Date.now(), isFromMe: false } }],
@@ -29,7 +30,7 @@ let state: AppState = {
     { guid: firstMessage, chatGuid: firstChat, kind: "text", from: friend, isFromMe: false, body: "Can you bring the project notes tomorrow?", attachments: [{ guid: "attachment-one", name: "sample.png", mime: "image/png", bytes: syntheticPng.byteLength }], sentAt: Date.now() - 5_000, status: "sent" },
     { guid: secondMessage, tempGuid: secondMessage, chatGuid: firstChat, kind: "text", from: me, isFromMe: true, body: "Yes, I have them ready.", attachments: [], sentAt: Date.now(), status: "uncertain" },
   ]]]),
-  history: new Map([[firstChat, { kind: "ready", next: { before: Date.now() - 5_000, offset: 2 } }]]),
+  history: new Map([[firstChat, { kind: "ready", next: { before: Date.now() - 5_000 } }]]),
   selected: null,
   listCursor: firstChat,
   input: { kind: "list" },
@@ -264,6 +265,17 @@ assert.equal(session.getSnapshot().input.kind, "composer");
 setup.mockInput.pressKey("ESCAPE");
 await delay(60);
 await setup.flush();
+// Without imsg's bridge, reply and react explain themselves instead of opening dead ends.
+state = { ...state, capabilities: { bridge: false } };
+for (const listener of listeners) listener();
+await setup.flush();
+setup.mockInput.pressKey("t");
+await setup.flush();
+assert.equal(session.getSnapshot().input.kind, "transcript");
+assert.ok(intents.some((intent) => intent.type === "notice" && intent.notice?.text.includes("imsg bridge")));
+state = { ...state, capabilities: { bridge: true } };
+for (const listener of listeners) listener();
+await setup.flush();
 setup.mockInput.pressKey("j");
 await setup.flush();
 setup.mockInput.pressKey("!");
@@ -371,7 +383,7 @@ await setup.flush();
 const manualFrame = setup.captureCharFrame();
 const visibleAnchor = manualFrame.match(/Long message \d+ anchor/)?.[0];
 assert(visibleAnchor);
-state = { ...state, history: new Map(state.history).set(firstChat, { kind: "loading", request: 99, mode: "older", hasPage: true, next: { before: 1, offset: 1 } }) };
+state = { ...state, history: new Map(state.history).set(firstChat, { kind: "loading", request: 99, mode: "older", hasPage: true, next: { before: 1 } }) };
 for (const listener of listeners) listener();
 await setup.flush();
 const moreOlder: Message[] = Array.from({ length: 2 }, (_, index) => ({

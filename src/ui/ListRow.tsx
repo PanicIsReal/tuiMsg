@@ -47,11 +47,14 @@ export const ListRow = memo(function ListRow(props: ListRowProps) {
 
 function normalizePreview(value: string): string {
   const text = value.replace(/\uFFFC/g, "").replace(/[\r\n\t]+/g, " ").trim();
-  return text || (value.includes("\uFFFC") ? "Attachment" : "No messages yet");
+  // Previews load after the list; an empty one is still on its way.
+  return text || (value.includes("\uFFFC") ? "Attachment" : "");
 }
 
+// Slice by code point so an emoji at the cut is dropped whole rather than split into "�".
 function truncateEnd(value: string, width: number): string {
-  if (value.length <= width) return value;
+  const characters = Array.from(value);
+  if (characters.length <= width) return value;
   if (width <= 1) return "…";
-  return `${value.slice(0, width - 1)}…`;
+  return `${characters.slice(0, width - 1).join("")}…`;
 }

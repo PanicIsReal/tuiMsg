@@ -4,32 +4,38 @@ import { mkdtemp, readFile, readdir, rm, mkdir, writeFile } from "node:fs/promis
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import sharp from "sharp";
-import { FakeBb } from "../src/bb/fake.ts";
+import type { FakeImsgOptions } from "../src/imsg/fake.ts";
 
-const directory = await mkdtemp(join(tmpdir(), "imsg-image-pty-"));
+// Attachments are files Messages stored on this Mac; imsg reports their paths.
+const directory = await mkdtemp(join(tmpdir(), "tuimsg-image-pty-"));
 const first = await sharp({ create: { width: 120, height: 60, channels: 3, background: "#427fd6" } }).png().toBuffer();
 const second = await sharp({ create: { width: 60, height: 120, channels: 3, background: "#e3a340" } }).jpeg().toBuffer();
-const chatGuid = "iMessage;+;+15551230001";
-const fake = new FakeBb({
-  attachments: { "photo-one": first, "photo-two": second },
-  messages: { [chatGuid]: [{ guid: "photo-message", chatGuid, text: "Photo delivery proof", isFromMe: false, dateCreated: Date.now(),
+const stored = join(directory, "Messages", "Attachments");
+await mkdir(stored, { recursive: true });
+await writeFile(join(stored, "photo-one.png"), first);
+await writeFile(join(stored, "photo-two.jpg"), second);
+const handle = "+15551230001";
+const fixture: FakeImsgOptions = {
+  chats: [{ id: 1, guid: `iMessage;-;${handle}`, identifier: handle, service: "iMessage", is_group: false, contact_name: "Jane Doe", participants: [handle], unread_count: 0 }],
+  messages: [{ id: 1, chat_id: 1, guid: "photo-message", sender: handle, sender_name: "Jane Doe", is_from_me: false, text: "Photo delivery proof", created_at: Date.now(),
     attachments: [
-      { guid: "photo-one", transferName: "photo-one.png", mimeType: "image/png", totalBytes: first.length },
-      { guid: "photo-two", transferName: "photo-two.jpg", mimeType: "image/jpeg", totalBytes: second.length },
+      { transfer_name: "photo-one.png", mime_type: "image/png", total_bytes: first.length, original_path: join(stored, "photo-one.png") },
+      { transfer_name: "photo-two.jpg", mime_type: "image/jpeg", total_bytes: second.length, original_path: join(stored, "photo-two.jpg") },
     ],
-  }] },
-});
-await fake.listen(0);
+  }],
+};
+const fixturePath = join(directory, "fixture.json");
+await writeFile(fixturePath, JSON.stringify(fixture));
 const pause = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 const results: string[] = [];
 try {
   for (const native of [false, true]) {
     let output = "";
     const decoder = new TextDecoder();
-    const env: NodeJS.ProcessEnv = { ...process.env, TERM: native ? "xterm-kitty" : "xterm-256color", TERM_PROGRAM: "", IMSG_URL: fake.url, IMSG_PASSWORD: fake.password, IMSG_CONFIG: join(directory, native ? "native/config.json" : "ansi/config.json") };
+    const env: NodeJS.ProcessEnv = { ...process.env, TERM: native ? "xterm-kitty" : "xterm-256color", TERM_PROGRAM: "", TUIMSG_FAKE_FIXTURE: fixturePath, TUIMSG_HOME: join(directory, native ? "native" : "ansi") };
     delete env.KITTY_WINDOW_ID;
     delete env.TMUX;
-    const child = spawn([process.execPath, resolve("bin/imsg")], { env, terminal: { cols: 100, rows: 35, data(_terminal, bytes) { output += decoder.decode(bytes, { stream: true }); } } });
+    const child = spawn([process.execPath, resolve("bin/tuimsg"), "--fake"], { env, terminal: { cols: 100, rows: 35, data(_terminal, bytes) { output += decoder.decode(bytes, { stream: true }); } } });
     const terminal = child.terminal;
     assert(terminal);
     const wait = async (predicate: () => boolean, label: string) => {
@@ -68,7 +74,6 @@ try {
       assert.equal(child.exitCode, 0, "image viewer must quit cleanly");
       assert(output.includes("\x1b[?1049l"), "alternate screen must be restored");
       if (native) assert(output.includes("a=d,d=I"), "owned native images must be deleted");
-      assert(!output.includes(fake.password));
       results.push(native ? "native-kitty-protocol" : "ansi-pixels");
     } finally {
       if (child.exitCode === null) child.kill("SIGKILL");
@@ -76,12 +81,9 @@ try {
       terminal.close();
     }
   }
-  assert(fake.requests.some(request => request.path.includes("/photo-one/download")));
-  assert(fake.requests.some(request => request.path.includes("/photo-two/download")));
   await mkdir(".audit/ink", { recursive: true });
-  await writeFile(".audit/ink/images.json", JSON.stringify({ passed: true, realPty: true, authenticatedDownloads: true, originalSavedIntact: true, secondImageViewer: true, renderers: results, nativeHardwareDisplay: "not verified" }, null, 2));
-  process.stdout.write("Image PTY passed: authenticated PNG/JPEG downloads, ANSI pixels, native Kitty commands, attachment viewer, intact original save, resize and cleanup.\n");
+  await writeFile(".audit/ink/images.json", JSON.stringify({ passed: true, realPty: true, localAttachments: true, originalSavedIntact: true, secondImageViewer: true, renderers: results, nativeHardwareDisplay: "not verified" }, null, 2));
+  process.stdout.write("Image PTY passed: local PNG/JPEG attachments, ANSI pixels, native Kitty commands, attachment viewer, intact original save, resize and cleanup.\n");
 } finally {
-  await fake.close();
   await rm(directory, { recursive: true, force: true });
 }

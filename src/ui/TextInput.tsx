@@ -3,15 +3,19 @@ import stringWidth from "string-width";
 import { useEffect, useRef, useState } from "react";
 import { Box, Text, useInput, usePaste, useBoxMetrics, type DOMElement } from "ink";
 import { colors } from "./theme.ts";
+import { cleanText } from "../domain/text.ts";
 
 export function TextInput(props: {
   value: string; onChange: (value: string) => void; onSubmit: () => void;
-  focused: boolean; placeholder?: string; multiline?: boolean; rows?: number; mask?: string | undefined;
+  focused: boolean; placeholder?: string; multiline?: boolean; rows?: number;
 }) {
   const box = useRef<DOMElement>(null);
   const metrics = useBoxMetrics(box);
   const [position, setPosition] = useState(Array.from(props.value).length);
   const editing = useRef({ value: props.value, cursor: position });
+  const submitLatest = useRef(props.onSubmit);
+  submitLatest.current = props.onSubmit;
+  const clean = (text: string) => props.multiline ? cleanText(text) : cleanText(text).replace(/\n/g, "");
   useEffect(() => { editing.current = { value: props.value, cursor: Math.min(editing.current.cursor, Array.from(props.value).length) }; }, [props.value]);
   const characters = Array.from(props.value);
   const cursor = Math.min(position, characters.length);
@@ -19,7 +23,7 @@ export function TextInput(props: {
   usePaste(text => {
     const characters = Array.from(editing.current.value);
     const cursor = editing.current.cursor;
-    const value = text.replace(/\r\n?/g, "\n").replace(props.multiline ? /\x00/g : /[\n\x00]/g, "");
+    const value = clean(text);
     const next = [...characters.slice(0, cursor), value, ...characters.slice(cursor)].join("");
     editing.current = { value: next, cursor: cursor + Array.from(value).length };
     props.onChange(next);
@@ -61,14 +65,20 @@ export function TextInput(props: {
       else props.onSubmit();
       return;
     }
-    if (input && !key.meta && !key.ctrl) edit(cursor, cursor, input.replace(/\r\n?/g, "\n").replace(props.multiline ? /\x00/g : /[\n\x00]/g, ""));
+    // Over SSH, text typed just before Enter often arrives in the same read ("ok\r").
+    // Insert it, then submit once the parent has rendered the new value.
+    if (!key.meta && !key.ctrl && input.length > 1 && input.endsWith("\r") && !input.slice(0, -1).includes("\r")) {
+      edit(cursor, cursor, clean(input.slice(0, -1)));
+      setTimeout(() => submitLatest.current(), 0);
+      return;
+    }
+    if (input && !key.meta && !key.ctrl) edit(cursor, cursor, clean(input));
   }, { isActive: props.focused });
-  const visible = props.mask ? characters.map(() => props.mask ?? "*") : characters;
   const lines: { text: string; index: number }[][] = [[]];
   let column = 0;
   let cursorRow = 0;
-  for (let index = 0; index <= visible.length; index++) {
-    const character = visible[index] ?? " ";
+  for (let index = 0; index <= characters.length; index++) {
+    const character = characters[index] ?? " ";
     const width = character === "\n" ? 1 : stringWidth(character);
     if (column + width > Math.max(1, metrics.width)) { lines.push([]); column = 0; }
     if (index === cursor) cursorRow = lines.length - 1;

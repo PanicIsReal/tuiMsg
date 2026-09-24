@@ -1,6 +1,6 @@
 import { contactLookupKey, parseHandleAddress, type ChatGuid, type HandleAddress } from "./ids.ts";
 import type { AppEvent, AppState, Chat, Contact, Handle, HistoryState, Message, MessageStatus, Outgoing, Service, TextMessage } from "./model.ts";
-import { previewBody } from "./model.ts";
+import { chatActivity, previewBody } from "./model.ts";
 
 function cloneState(state: AppState): AppState {
   return { ...state, chats: new Map(state.chats), messages: new Map(state.messages), contacts: new Map(state.contacts), history: new Map(state.history), drafts: new Map(state.drafts), outbox: new Map(state.outbox), readAt: new Map(state.readAt), readPending: new Map(state.readPending), messageCursor: new Map(state.messageCursor), typing: new Map(state.typing) };
@@ -28,7 +28,9 @@ function applyContactsToChat(chat: Chat, contacts: Map<HandleAddress, Contact>):
   if (chat.kind === "dm") {
     const other = participants[0];
     title = other?.contact?.displayName ?? other?.address ?? title;
-  } else if (!title || title === "Group" || title === chat.participants.map((handle) => handle.address).join(", ")) {
+  } else if (!title || title === "Group" || title === chat.participants.map((handle) => handle.address).join(", ") ||
+      // Names arrive a sender at a time, so a partly named title is still a derived one.
+      title === chat.participants.map((handle) => handle.contact?.displayName ?? handle.address).join(", ")) {
     title = participants.map((handle) => handle.contact?.displayName ?? handle.address).join(", ");
   }
   return { ...chat, participants, title };
@@ -119,7 +121,7 @@ function pendingText(outgoing: Outgoing, now: number, service: Service = outgoin
 
 function visibleChats(state: AppState): ChatGuid[] {
   const query = state.search.trim().toLowerCase();
-  return [...state.chats.values()].filter((chat) => !query || chat.title.toLowerCase().includes(query) || (chat.lastMessage?.body.toLowerCase().includes(query) ?? false)).sort((a, b) => (b.lastMessage?.sentAt ?? 0) - (a.lastMessage?.sentAt ?? 0)).map((chat) => chat.guid);
+  return [...state.chats.values()].filter((chat) => !query || chat.title.toLowerCase().includes(query) || (chat.lastMessage?.body.toLowerCase().includes(query) ?? false)).sort((a, b) => chatActivity(b) - chatActivity(a)).map((chat) => chat.guid);
 }
 
 function moved<T>(items: T[], current: T | null | undefined, delta: number): T | null {
@@ -198,8 +200,9 @@ export function reduce(state: AppState, event: AppEvent, now = Date.now()): AppS
       for (const incoming of event.chats) {
         const existing = chats.get(incoming.guid);
         const lastMessage = existing?.lastMessage && (!incoming.lastMessage || existing.lastMessage.sentAt > incoming.lastMessage.sentAt) ? existing.lastMessage : incoming.lastMessage;
-        const alreadyRead = incoming.guid === readingChat(state) || (incoming.lastMessage !== undefined && incoming.lastMessage.sentAt <= (state.readAt.get(incoming.guid) ?? 0));
-        const merged: Chat = { ...existing, ...incoming, unreadCount: Math.max(existing?.unreadCount ?? 0, alreadyRead ? 0 : incoming.unreadCount) };
+        // The Messages database owns unread state; a chat read here without the bridge stays read locally.
+        const alreadyRead = incoming.guid === readingChat(state) || chatActivity(incoming) <= (state.readAt.get(incoming.guid) ?? 0);
+        const merged: Chat = { ...existing, ...incoming, unreadCount: alreadyRead ? 0 : incoming.unreadCount };
         delete merged.provisional;
         if (lastMessage) merged.lastMessage = lastMessage; else delete merged.lastMessage;
         chats.set(incoming.guid, applyContactsToChat(merged, state.contacts));
@@ -209,6 +212,14 @@ export function reduce(state: AppState, event: AppEvent, now = Date.now()): AppS
       return { ...next, listCursor: state.listCursor && chats.has(state.listCursor) ? state.listCursor : visible[0] ?? null };
     }
     case "chats-status": return { ...state, chatsStatus: event.status };
+    case "chat-preview": {
+      const chat = state.chats.get(event.chatGuid);
+      if (!chat || (chat.lastMessage && chat.lastMessage.sentAt > event.message.sentAt)) return state;
+      const chats = new Map(state.chats);
+      const fromMe = "isFromMe" in event.message && event.message.isFromMe;
+      chats.set(event.chatGuid, { ...chat, lastMessage: { body: previewBody(event.message), sentAt: event.message.sentAt, isFromMe: fromMe, guid: event.message.guid } });
+      return { ...state, chats };
+    }
     case "contacts-loaded": {
       const next = cloneState(state);
       for (const contact of event.contacts) for (const address of [...contact.phones, ...contact.emails]) next.contacts.set(contactLookupKey(address), contact);

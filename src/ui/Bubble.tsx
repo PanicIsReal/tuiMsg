@@ -5,6 +5,7 @@ import { isImageAttachment } from "../attachments.ts";
 import { memo, useRef } from "react";
 import type { Attachment, Message, TapbackChip } from "../domain/model.ts";
 import { colors, reactionGlyph } from "./theme.ts";
+import { cleanText } from "../domain/text.ts";
 
 export type BubbleProps = {
   message: Exclude<Message, { kind: "tapback" }>;
@@ -48,7 +49,7 @@ export const Bubble = memo(function Bubble(props: BubbleProps) {
       {props.loadAttachment ? imageAttachments.map(attachment => <ImagePreview key={attachment.guid} attachment={attachment} loadAttachment={props.loadAttachment!} width={Math.min(48, contentWidth)} height={props.width < 60 ? 6 : 10} delayMs={150} />) : null}
       {message.attachments.map(attachment => <AttachmentLink key={attachment.guid} label={`${isImageAttachment(attachment) ? "↗" : "↓"} ${attachment.name}  ${formatBytes(attachment.bytes)}`} onOpen={() => props.onViewAttachment?.(attachment)} />)}
       {!body && !message.attachments.length ? <Text color={colors.subtle}>Empty message</Text> : null}
-      {props.chips.length ? <Text color={colors.secondary}>{props.chips.map(chip => `${reactionGlyph[chip.reaction]}${chip.count > 1 ? ` ×${chip.count}` : ""}`).join("  ")}</Text> : null}
+      {props.chips.length ? <Text color={colors.secondary}>{props.chips.map(chip => `${chip.reaction === "emoji" ? chip.emoji ?? "?" : reactionGlyph[chip.reaction]}${chip.count > 1 ? ` ×${chip.count}` : ""}`).join("  ")}</Text> : null}
       {props.showReceipt || message.status === "pending" || message.status === "failed" || message.status === "uncertain" ? <Receipt message={message} /> : null}
     </Box>
   </Box>;
@@ -71,7 +72,8 @@ function receiptLabel(message: Extract<Message, { kind: "text" }>): string {
 }
 
 function normalizeBody(body: string): string {
-  const lines = body.split("\n").flatMap((line) => {
+  // Received text is cleaned when parsed; a pending bubble shows the local draft as typed.
+  const lines = cleanText(body).split("\n").flatMap((line) => {
     const normalized = line.replace(/\uFFFC/g, "");
     return normalized.trim().length === 0 && line.includes("\uFFFC") ? [] : [normalized];
   });

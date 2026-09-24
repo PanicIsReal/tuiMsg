@@ -4,7 +4,7 @@ import { ImageViewer } from "./ImagePreview.tsx";
 import { isImageAttachment } from "../attachments.ts";
 import { useMemo, useSyncExternalStore } from "react";
 import type { Attachment, Chat, InputMode, Message, Pane, Reaction, Session } from "../domain/model.ts";
-import { draftFor, privateApiAvailable } from "../domain/model.ts";
+import { bridgeAvailable, draftFor } from "../domain/model.ts";
 import type { MessageGuid } from "../domain/ids.ts";
 import { sortedChats } from "../domain/view.ts";
 import { Composer, composerHeight } from "./Composer.tsx";
@@ -83,6 +83,14 @@ function AppContent({ session }: AppProps) {
                     onSubmit={() => session.act({ type: "send", chatGuid: selected.guid })}
                     onEscape={() => session.act({ type: "input", input: { kind: "transcript", chatGuid: selected.guid } })} />
                 </>
+              ) : state.connection === "no-access" && state.notice?.kind === "error" ? (
+                <Box flexGrow={1} justifyContent="center" alignItems="center" paddingX={2}>
+                  <Box flexDirection="column" width={Math.min(64, laneWidth - 4)}>
+                    <Text><Text bold color={colors.text}>Messages is not available</Text></Text>
+                    <Text><Text color={colors.secondary}>{state.notice.text}</Text></Text>
+                    <Text><Text color={colors.subtle}>Shift+R retries · q quits</Text></Text>
+                  </Box>
+                </Box>
               ) : (
                 <Box flexGrow={1} justifyContent="center" alignItems="center">
                   <Box flexDirection="column" alignItems="center">
@@ -214,7 +222,9 @@ function routeTranscript(key: KeyEvent, context: RouteContext): boolean {
     const history = state.history.get(chatGuid);
     if (history?.kind === "error") session.act({ type: "load-history", chatGuid, mode: history.mode });
   }
-  else if (key.name === "r" && message) {
+  else if ((key.name === "r" || key.name === "t") && message && !bridgeAvailable(state.capabilities)) {
+    session.act({ type: "notice", notice: { kind: "error", text: `${key.name === "r" ? "Replies" : "Reactions"} need the imsg bridge (imsg launch).` } });
+  } else if (key.name === "r" && message) {
     session.act({ type: "reply", chatGuid, messageGuid: message.guid });
     session.act({ type: "input", input: { kind: "composer", chatGuid } });
   } else if (key.name === "y" && message?.kind === "text") session.act({ type: "copy", text: message.body });
@@ -265,12 +275,14 @@ function paneFor(input: InputMode): Pane {
   return input;
 }
 
+const CONNECTION_LABELS = { connecting: "starting imsg", online: "online", offline: "imsg stopped", "no-access": "no access" } as const;
+
 function StatusBar(props: { state: ReturnType<Session["getSnapshot"]>; narrow: boolean }) {
   const connectionColor = props.state.connection === "online" ? colors.outgoingSms
-    : props.state.connection === "auth-failed" ? colors.failed : colors.warning;
+    : props.state.connection === "no-access" ? colors.failed : colors.warning;
   return (
     <Box height={1} paddingLeft={1} paddingRight={1} flexDirection="row" justifyContent="space-between">
-      <Text><Text color={connectionColor}>● {props.state.connection}</Text><Text color={colors.secondary}>{privateApiAvailable(props.state.capabilities) ? " · private API" : ""}</Text></Text>
+      <Text><Text color={connectionColor}>● {CONNECTION_LABELS[props.state.connection]}</Text><Text color={colors.secondary}>{bridgeAvailable(props.state.capabilities) ? " · bridge" : ""}</Text></Text>
       <Text><Text color={props.state.notice?.kind === "error" ? colors.failed : colors.secondary}>{props.state.notice?.text ?? (props.narrow ? "? help" : "Tab panes · ? help · q quit")}</Text></Text>
     </Box>
   );
@@ -295,7 +307,7 @@ function Overlay(props: {
     onChange={(text) => props.session.act({ type: "search-set", text })}
     onClose={() => props.session.act({ type: "input", input: props.input.kind === "search" ? props.input.returnTo : { kind: "list" } })} />;
   else if (props.input.kind === "new-chat") content = <NewChatModal mode={props.input}
-    privateApi={privateApiAvailable(props.state.capabilities)}
+    bridge={bridgeAvailable(props.state.capabilities)}
     onChange={(input) => props.session.act({ type: "input", input })}
     onCancel={() => props.session.act({ type: "input", input: { kind: "list" } })}
     onSubmit={() => submitNewChat(props.input as Extract<InputMode, { kind: "new-chat" }>, props.session)} />;

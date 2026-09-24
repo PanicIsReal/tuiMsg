@@ -1,7 +1,7 @@
 import { useRef } from "react";
 import { useMouse } from "./mouse.tsx";
 import { Box, Text, type DOMElement } from "ink";
-import type { Chat } from "../domain/model.ts";
+import { chatActivity, type Chat } from "../domain/model.ts";
 import type { ChatGuid } from "../domain/ids.ts";
 import { ListRow } from "./ListRow.tsx";
 import { colors } from "./theme.ts";
@@ -29,7 +29,7 @@ export function List(props: ListProps) {
     </Box>
     <Box flexDirection="column" flexGrow={1} overflow="hidden">
       {props.status !== "ready" || !props.chats.length ? <Box padding={1}><Text color={props.status === "error" ? colors.failed : colors.secondary}>{props.status === "loading" ? "Loading conversations…" : props.status === "error" ? "Could not load · press R" : props.search ? "No matching conversations" : "No conversations"}</Text></Box> : null}
-      {visible.map(chat => <ListRow id={`chat-${chat.guid}`} key={chat.guid} title={chat.title} preview={chat.lastMessage?.body ?? ""} time={formatTime(chat.lastMessage?.sentAt ?? 0)} unread={chat.unreadCount > 0} active={chat.guid === props.selected} cursor={chat.guid === (props.focused ? props.cursor : props.selected)} sms={chat.service === "SMS"} width={props.width} onOpen={() => props.onOpen(chat.guid)} />)}
+      {visible.map(chat => <ListRow id={`chat-${chat.guid}`} key={chat.guid} title={chat.title} preview={chat.lastMessage?.body ?? ""} time={formatTime(chatActivity(chat))} unread={chat.unreadCount > 0} active={chat.guid === props.selected} cursor={chat.guid === (props.focused ? props.cursor : props.selected)} sms={chat.service === "SMS"} width={props.width} onOpen={() => props.onOpen(chat.guid)} />)}
     </Box>
     <Box height={1} paddingX={1}><Text color={colors.subtle}>{props.chats.length ? `${start + 1}–${start + visible.length} of ${props.chats.length}` : " "}</Text></Box>
   </Box>;

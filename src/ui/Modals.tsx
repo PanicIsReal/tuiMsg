@@ -16,7 +16,7 @@ export function SearchModal(props: { value: string; onChange: (value: string) =>
 
 export function NewChatModal(props: {
   mode: Extract<InputMode, { kind: "new-chat" }>;
-  privateApi: boolean;
+  bridge: boolean;
   onChange: (mode: Extract<InputMode, { kind: "new-chat" }>) => void;
   onSubmit: () => void;
   onCancel: () => void;
@@ -37,7 +37,7 @@ export function NewChatModal(props: {
         <Text><Text color={props.mode.service === "SMS" ? colors.outgoingSms : colors.secondary}> SMS </Text></Text>
       </Box>
       {props.mode.error ? <Text><Text color={colors.failed}>{props.mode.error}</Text></Text> : null}
-      {!props.privateApi && !compact ? <Text><Text color={colors.warning}>Group creation may require the private API.</Text></Text> : null}
+      {!props.bridge && !compact ? <Text><Text color={colors.warning}>Group conversations need the imsg bridge.</Text></Text> : null}
       <Text><Text color={colors.secondary}>{props.mode.busy ? "Creating…" : compact ? "Tab field · Ctrl+S send" : "Tab field · Ctrl+S send · Ctrl+T service"}</Text></Text>
       <Text><Text color={colors.secondary}>{compact ? "Ctrl+T service · Esc cancel" : "Esc cancel"}</Text></Text>
     </Modal>

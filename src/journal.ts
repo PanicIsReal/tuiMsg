@@ -1,7 +1,6 @@
-import { createHash } from "node:crypto";
 import { chmod, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { configPath } from "./config.ts";
+import { dataDirectory } from "./config.ts";
 import { parseChatGuid, parseMessageGuid } from "./domain/ids.ts";
 import type { Draft, Outgoing, SavedSession } from "./domain/model.ts";
 
@@ -11,12 +10,8 @@ export type Journal = {
   flush: () => Promise<void>;
 };
 
-function accountKey(url: string, password: string): string {
-  return createHash("sha256").update(url).update("\0").update(password).digest("hex");
-}
-
-export function journalPath(url: string, password: string, path = configPath()): string {
-  return join(dirname(path), "sessions", `${accountKey(url, password)}.json`);
+export function journalPath(directory = dataDirectory()): string {
+  return join(directory, "session.json");
 }
 
 function parseSaved(value: unknown): SavedSession {
@@ -56,12 +51,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-export function createJournal(args: {
-  url: string;
-  password: string;
-  configFile?: string;
-}): Journal {
-  const path = journalPath(args.url, args.password, args.configFile);
+export function createJournal(path = journalPath()): Journal {
   let writes = Promise.resolve();
   let loadFailed = false;
 

@@ -4,7 +4,7 @@ import { colors } from "./theme.ts";
 const LINES = [
   "j/k ↑/↓ move · Enter open/send",
   "i compose · Esc back · Tab panes",
-  "Ctrl+J / Shift+Enter newline",
+  "Ctrl+J newline · Enter sends",
   "y copy · r reply · t react",
   "a files · v image · o open · s save",
   "! retry · g older · m retry read",

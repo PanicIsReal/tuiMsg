@@ -36,13 +36,13 @@ describe("domain event transitions", () => {
   });
 
   it("ignores stale history completions and preserves the oldest pagination cursor on refresh", () => {
-    const oldest = { before: 10, offset: 20 };
+    const oldest = { before: 10 };
     let state = emptyState();
     state.history.set(chatGuid, { kind: "ready", next: oldest });
     state = reduce(state, { type: "history-loading", chatGuid, request: 2, mode: "latest" });
-    const stale = reduce(state, { type: "history-loaded", chatGuid, request: 1, page: { messages: [text("stale", 1)], next: null, total: 1 } });
+    const stale = reduce(state, { type: "history-loaded", chatGuid, request: 1, page: { messages: [text("stale", 1)], next: null } });
     expect(stale).toBe(state);
-    state = reduce(state, { type: "history-loaded", chatGuid, request: 2, page: { messages: [text("new", 30)], next: { before: 25, offset: 5 }, total: 1 } });
+    state = reduce(state, { type: "history-loaded", chatGuid, request: 2, page: { messages: [text("new", 30)], next: { before: 25 } } });
     expect(state.history.get(chatGuid)).toEqual({ kind: "ready", next: oldest });
   });
 
@@ -85,5 +85,26 @@ describe("tapback membership", () => {
     const rows = foldTapbacks([target, reaction("a", alice, false), reaction("b", bob, false), reaction("remove-a", alice, true)]);
     const row = rows.find((candidate) => candidate.kind === "message");
     expect(row?.kind === "message" ? row.chips : []).toEqual([{ reaction: "love", count: 1, fromMe: false }]);
+  });
+
+  it("keeps your reaction and theirs apart in a direct chat where both rows carry their handle", () => {
+    const target = text("dm-target", 1);
+    const reaction = (guid: string, isFromMe: boolean, removed: boolean): Message => ({ kind: "tapback", guid: parseMessageGuid(guid), chatGuid, sentAt: removed ? 4 : 2, target: target.guid, reaction: "love", from: { address: bob, service: "iMessage" }, isFromMe, removed });
+    const chips = (messages: Message[]) => {
+      const row = foldTapbacks(messages).find((candidate) => candidate.kind === "message");
+      return row?.kind === "message" ? row.chips : [];
+    };
+    expect(chips([target, reaction("theirs", false, false), reaction("mine", true, false)])).toEqual([{ reaction: "love", count: 2, fromMe: true }]);
+    expect(chips([target, reaction("theirs", false, false), reaction("mine", true, false), reaction("theirs-off", false, true)])).toEqual([{ reaction: "love", count: 1, fromMe: true }]);
+  });
+
+  it("shows custom emoji reactions after the standard ones", () => {
+    const target = text("emoji-target", 1);
+    const rows = foldTapbacks([target,
+      { kind: "tapback", guid: parseMessageGuid("party"), chatGuid, sentAt: 2, target: target.guid, reaction: "emoji", emoji: "🎉", from: { address: bob, service: "iMessage" }, isFromMe: false, removed: false },
+      { kind: "tapback", guid: parseMessageGuid("like"), chatGuid, sentAt: 3, target: target.guid, reaction: "like", from: { address: alice, service: "iMessage" }, isFromMe: false, removed: false },
+    ]);
+    const row = rows.find((candidate) => candidate.kind === "message");
+    expect(row?.kind === "message" ? row.chips : []).toEqual([{ reaction: "like", count: 1, fromMe: false }, { reaction: "emoji", emoji: "🎉", count: 1, fromMe: false }]);
   });
 });

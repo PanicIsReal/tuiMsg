@@ -3,16 +3,19 @@ import type { ChatGuid, HandleAddress, MessageGuid } from "./ids.ts";
 export type Service = "iMessage" | "SMS";
 export type ChatKind = "dm" | "group";
 export type MessageStatus = "pending" | "sent" | "delivered" | "read" | "failed" | "uncertain";
-export type Connection = "offline" | "connecting" | "online" | "auth-failed";
+export type Connection = "offline" | "connecting" | "online" | "no-access";
 export type Reaction = "love" | "like" | "dislike" | "laugh" | "emphasize" | "question";
+// Received tapbacks can also be any emoji (iOS 18+); only the six standard ones can be sent.
+export type TapbackKind = Reaction | "emoji";
 export type Contact = { displayName: string; phones: HandleAddress[]; emails: HandleAddress[] };
 export type Handle = { address: HandleAddress; service: Service; contact?: Contact };
-export type TapbackChip = { reaction: Reaction; count: number; fromMe: boolean };
-export type Attachment = { guid: string; name: string; mime: string; bytes: number };
+export type TapbackChip = { reaction: TapbackKind; emoji?: string; count: number; fromMe: boolean };
+export type Attachment = { guid: string; name: string; mime: string; bytes: number; path?: string; missing?: boolean };
 export type MessagePreview = { body: string; sentAt: number; isFromMe: boolean; guid?: MessageGuid };
 export type Chat = {
   guid: ChatGuid; kind: ChatKind; service: Service; title: string; participants: Handle[];
   lastMessage?: MessagePreview; unreadCount: number; muted: boolean; provisional?: boolean;
+  rowId?: number; lastActivityAt?: number;
 };
 type MessageBase = { guid: MessageGuid; chatGuid: ChatGuid; sentAt: number };
 export type TextMessage = MessageBase & {
@@ -21,18 +24,17 @@ export type TextMessage = MessageBase & {
   status: MessageStatus; tempGuid?: MessageGuid;
 };
 export type TapbackMessage = MessageBase & {
-  kind: "tapback"; target: MessageGuid; reaction: Reaction; from: Handle; isFromMe: boolean; removed: boolean;
+  kind: "tapback"; target: MessageGuid; reaction: TapbackKind; emoji?: string; from: Handle; isFromMe: boolean; removed: boolean;
 };
 export type GroupEventMessage = MessageBase & {
   kind: "group-event"; action: "add" | "remove" | "leave" | "rename"; actor: Handle; detail: string;
 };
 export type UnsentMessage = MessageBase & { kind: "unsent" };
 export type Message = TextMessage | TapbackMessage | GroupEventMessage | UnsentMessage;
-export type Capabilities = { privateApi: boolean; helperConnected: boolean };
+export type Capabilities = { bridge: boolean };
 export type Draft = { text: string; replyTo: MessageGuid | null };
-export type HistoryCursor = { before: number; offset: number };
-export type MessagePage = { messages: Message[]; next: HistoryCursor | null; total: number };
-export type ChatPage = { chats: Chat[]; nextOffset: number | null };
+export type HistoryCursor = { before: number };
+export type MessagePage = { messages: Message[]; next: HistoryCursor | null };
 export type PageMode = "latest" | "older";
 export type HistoryState =
   | { kind: "unloaded" }
@@ -88,6 +90,7 @@ export type AppEvent = Intent
   | { type: "capabilities"; capabilities: Capabilities }
   | { type: "chats-loaded"; chats: Chat[] }
   | { type: "chats-status"; status: AppState["chatsStatus"] }
+  | { type: "chat-preview"; chatGuid: ChatGuid; message: Message }
   | { type: "contacts-loaded"; contacts: Contact[] }
   | { type: "history-loading"; chatGuid: ChatGuid; request: number; mode: PageMode }
   | { type: "history-loaded"; chatGuid: ChatGuid; request: number; page: MessagePage }
@@ -113,7 +116,7 @@ export type Session = {
 };
 export function emptyState(): AppState {
   return {
-    connection: "connecting", capabilities: { privateApi: false, helperConnected: false },
+    connection: "connecting", capabilities: { bridge: false },
     chats: new Map(), messages: new Map(), contacts: new Map(), history: new Map(), drafts: new Map(),
     outbox: new Map(), readAt: new Map(), readPending: new Map(), selected: null, listCursor: null,
     messageCursor: new Map(), input: { kind: "list" }, search: "", typing: new Map(), notice: null,
@@ -131,6 +134,9 @@ export function previewBody(message: Message): string {
 export function draftFor(state: AppState, chatGuid: ChatGuid): Draft {
   return state.drafts.get(chatGuid) ?? { text: "", replyTo: null };
 }
-export function privateApiAvailable(capabilities: Capabilities): boolean {
-  return capabilities.privateApi && capabilities.helperConnected;
+export function bridgeAvailable(capabilities: Capabilities): boolean {
+  return capabilities.bridge;
+}
+export function chatActivity(chat: Chat): number {
+  return Math.max(chat.lastMessage?.sentAt ?? 0, chat.lastActivityAt ?? 0);
 }

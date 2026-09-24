@@ -1,21 +1,24 @@
 import { render, type Instance } from "ink";
 import { repaintImages, cleanupImages } from "./image-rendering.ts";
-import { FakeBb } from "./bb/fake.ts";
-import { loadConfig, parseArgs, savedServerUrl } from "./config.ts";
-import { setupConfig, SetupCancelled } from "./setup.ts";
+import { parseArgs, resolveImsg } from "./config.ts";
+import { runFakeImsgRpc } from "./imsg/fake.ts";
+import { childConnector, type RpcConnector } from "./imsg/rpc.ts";
 import { createSession } from "./session.ts";
 import { App } from "./ui/App.tsx";
 
-const HELP = `imsg · Messages TUI over BlueBubbles
+const HELP = `tuimsg · Messages TUI over imsg
 
 Usage:
-  imsg              set up on first launch, then connect with saved credentials
-  imsg --setup      configure the BlueBubbles server and password
-  imsg --fake       demo data, no BlueBubbles required
-  imsg --help
+  tuimsg            open Messages on this Mac (over SSH: ssh -t <mac> tuimsg)
+  tuimsg --fake     demo data, no Messages access required
+  tuimsg --help
+
+Requires imsg (brew install steipete/tap/imsg) and Full Disk Access for the
+terminal, or for SSH sessions ("Allow full disk access for remote users").
+Set IMSG_PATH to use a specific imsg binary.
 
 Copy uses OSC 52 so SSH sessions can write the local clipboard.
-Attachments opened over SSH are saved on the server and their path is shown.
+Attachments opened over SSH are saved on the Mac and their path is shown.
 `;
 
 async function main(): Promise<void> {
@@ -25,36 +28,32 @@ async function main(): Promise<void> {
     return;
   }
   if (args.version) {
-    process.stdout.write("tuimsg 0.1.0\n");
+    process.stdout.write("tuimsg 0.2.0\n");
     return;
   }
+  if (args.fakeRpc) {
+    await runFakeImsgRpc();
+    return;
+  }
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new Error("tuimsg needs an interactive terminal. Over SSH, allocate one: ssh -t <your-mac> tuimsg");
+  }
 
-  let fake: FakeBb | undefined;
-  let url: string;
-  let password: string;
+  let connect: () => RpcConnector;
   if (args.fake) {
-    fake = new FakeBb();
-    await fake.listen(0);
-    url = fake.url;
-    password = fake.password;
+    // The demo runs this same program as its imsg child, so it exercises the real stdio path.
+    const entry = process.argv[1] ?? "";
+    connect = () => childConnector(process.execPath, [entry, "--fake-rpc"]);
   } else {
-    let config = args.setup ? undefined : await loadConfig();
-    if (!config) {
-      if (!process.stdin.isTTY || !process.stdout.isTTY) {
-        throw new Error("No saved credentials. Run imsg --setup from a terminal, or set IMSG_URL and IMSG_PASSWORD.");
-      }
-      const savedUrl = args.setup ? undefined : await savedServerUrl();
-      config = await setupConfig(undefined, savedUrl, { reuseServer: !args.setup });
-    }
-    url = config.url;
-    password = config.password;
+    const imsg = await resolveImsg();
+    if (!imsg) throw new Error("imsg was not found. Install it on this Mac with: brew install steipete/tap/imsg (or set IMSG_PATH).");
+    connect = () => childConnector(imsg, ["rpc"]);
   }
 
   let app: Instance | undefined;
   let closing = false;
   const session = createSession({
-    url,
-    password,
+    connect,
     ssh: Boolean(process.env.SSH_CONNECTION || process.env.SSH_TTY),
     quit: close,
   });
@@ -71,11 +70,6 @@ async function main(): Promise<void> {
       cleanupImages();
       app?.unmount();
       await app?.waitUntilExit();
-      try {
-        await fake?.close();
-      } catch (error) {
-        failure ??= error;
-      }
     }
     if (failure) {
       process.stderr.write(`Shutdown failed: ${failure instanceof Error ? failure.message : String(failure)}\n`);
@@ -90,7 +84,9 @@ async function main(): Promise<void> {
       exitOnCtrlC: false,
       patchConsole: false,
       alternateScreen: true,
-      interactive: Boolean(process.stdout.isTTY),
+      // Rewrite only changed lines; a full redraw per keystroke is slow over SSH.
+      incrementalRendering: true,
+      interactive: true,
       onRender: () => repaintImages(),
     });
   } catch (error) {
@@ -101,10 +97,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error) => {
-  if (error instanceof SetupCancelled) {
-    process.stdout.write("Setup cancelled.\n");
-    return;
-  }
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
   process.exitCode = 1;
 });
