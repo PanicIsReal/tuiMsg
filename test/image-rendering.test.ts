@@ -155,6 +155,14 @@ it("paints native images after Ink output and reuses transmitted data on later f
   }
 });
 
+async function until(check: () => boolean, timeout = 5_000): Promise<void> {
+  const end = Date.now() + timeout;
+  while (!check()) {
+    if (Date.now() > end) throw new Error("condition was not reached");
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+}
+
 it("loads pixels only after an inline preview enters its clipped viewport", async () => {
   const { render: renderTest } = await import("ink-testing-library");
   const { Box, Text } = await import("ink");
@@ -169,13 +177,16 @@ it("loads pixels only after an inline preview enters its clipped viewport", asyn
     await new Promise(resolve => setTimeout(resolve, 80));
     expect(loads).toBe(0);
     app.rerender(tree(0));
-    await new Promise(resolve => setTimeout(resolve, 120));
+    // Decoding takes as long as the machine needs, so wait for the pixels, not a fixed time.
+    await until(() => app.lastFrame()?.includes("▄") ?? false);
     expect(loads).toBe(1);
-    expect(app.lastFrame()).toContain("▄");
     app.rerender(createElement(Box, { flexDirection: "column" },
       createElement(Box, { height: 1, width: 10, overflow: "hidden", flexDirection: "column" }, preview),
       createElement(Text, {}, "FOOTER")));
-    await new Promise(resolve => setTimeout(resolve, 80));
+    await until(() => {
+      const [first, second] = app.lastFrame()?.split("\n") ?? [];
+      return Boolean(first?.includes("▄")) && second === "FOOTER";
+    });
     const lines = app.lastFrame()?.split("\n") ?? [];
     expect(lines[0]).toContain("▄");
     expect(lines[1]).toBe("FOOTER");
