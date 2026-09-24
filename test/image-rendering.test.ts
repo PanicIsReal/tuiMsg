@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import sharp from "sharp";
 import { createElement } from "react";
 import { render } from "ink";
-import { configureGraphics, decodeImage, deleteKittyImage, imageCellSize, kittyImage, previewBound, supportsNativeImages, registerImage, repaintImages, cleanupImages } from "../src/image-rendering.ts";
+import { cachedConversion, configureGraphics, decodeImage, deleteKittyImage, imageCellSize, kittyImage, previewBound, supportsNativeImages, registerImage, repaintImages, cleanupImages } from "../src/image-rendering.ts";
 
 describe("image rendering", () => {
   it.each(["png", "jpeg", "webp", "gif"] as const)("decodes real %s bytes into colored pixels, and a PNG for kitty", async format => {
@@ -75,12 +78,39 @@ describe("image rendering", () => {
 
   it("converts a HEIC photo at the size it is drawn, not its own", () => {
     const cell = { width: 10, height: 20 };
-    // A 36 x 10 cell sixel preview is 360 x 200 px; twice that leaves detail for the resize.
-    expect(previewBound({ protocol: "sixel", cell }, 36, 10)).toBe(720);
-    // The full-screen viewer can need the photo's own size, up to 4096 px.
-    expect(previewBound({ protocol: "sixel", cell }, 207, 53)).toBe(4096);
+    // A 36 x 10 cell sixel preview is 360 x 200 px; a photo of any shape fits in 360.
+    expect(previewBound({ protocol: "sixel", cell }, 36, 10)).toBe(360);
+    // The full-screen viewer at 211 x 57 is 2070 px wide.
+    expect(previewBound({ protocol: "sixel", cell }, 207, 53)).toBe(2070);
     expect(previewBound({ protocol: "blocks", cell }, 36, 10)).toBe(256);
     expect(previewBound({ protocol: "kitty", cell }, 36, 10)).toBe(2560);
+  });
+
+  it("keeps each HEIC conversion, by content and size, most recently used first", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "tuimsg-conversions-"));
+    try {
+      let conversions = 0;
+      const convert = (fill: number) => async () => { conversions += 1; return Buffer.alloc(1_000, fill); };
+      const photo = Buffer.from("photo one");
+      expect(await cachedConversion(photo, 360, convert(1), directory)).toEqual(Buffer.alloc(1_000, 1));
+      expect(await cachedConversion(Buffer.from("photo one"), 360, convert(9), directory)).toEqual(Buffer.alloc(1_000, 1));
+      expect(conversions).toBe(1);
+      // Another size is another conversion.
+      await cachedConversion(photo, 2070, convert(2), directory);
+      expect(conversions).toBe(2);
+      // Past the limit the least recently used go.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      await cachedConversion(photo, 360, convert(9), directory);
+      await cachedConversion(Buffer.from("photo two"), 360, convert(3), directory, 2_500);
+      expect((await readdir(directory)).filter((name) => name.endsWith(".png"))).toHaveLength(2);
+      await cachedConversion(photo, 2070, convert(4), directory, 2_500);
+      expect(conversions).toBe(4);
+      // A converter that fails leaves nothing behind.
+      await expect(cachedConversion(Buffer.from("broken"), 360, async () => { throw new Error("sips failed"); }, directory)).rejects.toThrow("sips failed");
+      expect((await readdir(directory)).some((name) => name.includes("partial"))).toBe(false);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("only selects native graphics on known terminals outside tmux", () => {

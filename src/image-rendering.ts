@@ -1,9 +1,10 @@
 import sharp, { type Sharp } from "sharp";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
 import { promisify } from "node:util";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, mkdtemp, readdir, readFile, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { ScreenTracker } from "./screen-tracker.ts";
 import { FrameDiff, frameText, noDamage, type Damage } from "./frame-diff.ts";
@@ -61,7 +62,9 @@ export async function decodeImage(bytes: Uint8Array, columns: number, rows: numb
   } catch (error) {
     const heif = source.subarray(4, 8).toString() === "ftyp" && /heic|heix|hevc|hevx|mif1/.test(source.subarray(8, 40).toString());
     if (!heif || process.platform !== "darwin") throw error;
-    source = await convertHeic(source, previewBound(activeGraphics(), columns, rows), signal);
+    const bound = previewBound(activeGraphics(), columns, rows);
+    const heic = source;
+    source = await cachedConversion(heic, bound, () => convertHeic(heic, bound, signal));
     metadata = await sharp(source, options).metadata();
   }
   const sourceWidth = metadata.width;
@@ -125,14 +128,53 @@ function halfBlocks(data: Buffer, width: number, height: number, channels: numbe
   return lines.join("\n");
 }
 
-// The longest side, in pixels, a picture drawn in `columns` × `rows` cells can need, doubled
-// so the last resize still has detail to work from. Converting a HEIC photo at its own 4096
-// px meant writing and reading back a 25 MB PNG, about 1.5 s and 60 MB of memory, for a
-// preview 360 px wide.
+// The longest side, in pixels, a picture drawn in `columns` × `rows` cells can need: whatever
+// its shape, it fits inside them. Converting a HEIC photo at its own 4096 px meant writing and
+// reading back a 25 MB PNG, about 1.5 s and 60 MB of memory, for a preview 360 px wide.
 export function previewBound(graphics: Graphics, columns: number, rows: number): number {
   if (graphics.protocol === "kitty") return 2560;
   const cell = graphics.protocol === "sixel" ? graphics.cell : HALF_BLOCK_CELL;
-  return Math.min(4096, Math.max(256, 2 * Math.max(columns * cell.width, rows * cell.height)));
+  return Math.min(4096, Math.max(256, columns * cell.width, rows * cell.height));
+}
+
+// Converting a HEIC photo costs most of a second, most of it sips decoding the photo, so each
+// conversion is kept by the photo's content and the size it was made at, the most recently
+// used first, and reused from one run to the next.
+const CONVERSION_CACHE_BYTES = 200 * 1024 * 1024;
+
+export function conversionCacheDirectory(env: NodeJS.ProcessEnv = process.env): string {
+  return env.TUIMSG_HOME ? join(env.TUIMSG_HOME, "cache", "previews") : join(homedir(), "Library", "Caches", "tuimsg", "previews");
+}
+
+export async function cachedConversion(source: Buffer, bound: number, convert: () => Promise<Buffer>, directory = conversionCacheDirectory(), limit = CONVERSION_CACHE_BYTES): Promise<Buffer> {
+  const path = join(directory, `${createHash("sha256").update(source).digest("hex").slice(0, 32)}-${bound}.png`);
+  try {
+    const cached = await readFile(path);
+    const now = new Date();
+    await utimes(path, now, now).catch(() => undefined);
+    return cached;
+  } catch { /* not converted yet */ }
+  const converted = await convert();
+  try {
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    const partial = `${path}.${process.pid}.partial`;
+    await writeFile(partial, converted, { mode: 0o600 });
+    await rename(partial, path);
+    await trimConversions(directory, limit);
+  } catch { /* a cache that cannot be written only costs time */ }
+  return converted;
+}
+
+async function trimConversions(directory: string, limit: number): Promise<void> {
+  const files = await Promise.all((await readdir(directory)).filter((name) => name.endsWith(".png")).map(async (name) => {
+    const stats = await stat(join(directory, name)).catch(() => undefined);
+    return stats ? { name, size: stats.size, used: stats.mtimeMs } : undefined;
+  }));
+  let total = 0;
+  for (const file of files.filter((entry) => entry !== undefined).sort((a, b) => b.used - a.used)) {
+    total += file.size;
+    if (total > limit) await rm(join(directory, file.name), { force: true });
+  }
 }
 
 async function convertHeic(source: Buffer, bound: number, signal?: AbortSignal): Promise<Buffer> {
@@ -207,7 +249,7 @@ export function repaintImages(): void {
     const protocol = activeGraphics().protocol;
     if (protocol === "kitty") paintImages();
     // Moved sixels are redrawn when Ink rewrites their rows; only new ones are drawn here.
-    else if (protocol === "sixel") writeSixels(sixelRepaint(noDamage(), sixelTarget().rows ?? 24, sixelTarget().columns ?? 80, true));
+    else if (protocol === "sixel") writeSixels(sixelRepaint(noDamage(), sixelTarget().rows ?? 24, sixelTarget().columns ?? 80, true), "new");
   });
 }
 
@@ -219,10 +261,10 @@ function sixelTarget(): NodeJS.WriteStream {
   return terminal ?? process.stdout;
 }
 
-function writeSixels(output: string): void {
+function writeSixels(output: string, reason: "new" | "moved"): void {
   const target = sixelTarget();
   if (!output || !target.isTTY) return;
-  if (benchmark.on) benchmark.sixel(output.length);
+  if (benchmark.on) benchmark.sixel(output.length, reason);
   target.write(output);
 }
 
@@ -247,7 +289,7 @@ function settleLater(image: RegisteredImage, area: ImageArea): void {
     }
     image.shown = area;
     image.visible = area;
-    writeSixels(`\x1b7${stripsAt(image.sixel, area, () => true)}\x1b8`);
+    writeSixels(`\x1b7${stripsAt(image.sixel, area, () => true)}\x1b8`, "moved");
   }, SETTLE_MS) };
 }
 
@@ -366,7 +408,7 @@ export function trackTerminal(stream: NodeJS.WriteStream): NodeJS.WriteStream {
       if (damage.all || damage.rows.size || frame !== undefined) frames.invalidate();
     }
     const repaint = activeGraphics().protocol === "sixel" ? sixelRepaint(damage, rows, columns) : "";
-    if (benchmark.on && repaint) benchmark.sixel(repaint.length);
+    if (benchmark.on && repaint) benchmark.sixel(repaint.length, "rewritten");
     pending.push(data, repaint);
     // A write that wants to know when it is done goes out now, with whatever came before it.
     if (rest.some((value) => typeof value === "function")) return Reflect.apply(stream.write, stream, [take(), ...rest]) as boolean;
