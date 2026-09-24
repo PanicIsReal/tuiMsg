@@ -24,6 +24,9 @@ const HISTORY_PAGE = 50;
 const PREVIEW_CONCURRENCY = 2;
 const RESTART_DELAYS = [1_000, 2_000, 5_000, 15_000];
 const NOTICE_DURATIONS = { info: 5_000, error: 10_000 };
+// Background results (previews, services, contacts, streamed rows) wait this long for others,
+// so a startup with hundreds of conversations renders a few dozen times, not a thousand.
+const BATCH_MS = 16;
 
 export type SessionOptions = {
   // Starts one `imsg rpc` child; called again to restart it.
@@ -58,6 +61,9 @@ export function createSession(options: SessionOptions): Session {
   let lastRowId: number | undefined;
   let restartTimer: Timer | undefined;
   let noticeTimer: Timer | undefined;
+  let notifyTimer: Timer | undefined;
+  let acting = 0;
+  let changed = false;
   let restartAttempt = 0;
   let blocked = false;
   let closed = false;
@@ -111,12 +117,22 @@ export function createSession(options: SessionOptions): Session {
     const previous = state;
     state = reduce(state, event, now());
     if (state !== previous) {
-      for (const listener of listeners) listener();
+      changed = true;
+      // What a key does shows at once (act notifies as it returns); the rest is batched.
+      if (!acting && !notifyTimer) notifyTimer = setTimeout(notify, BATCH_MS);
       if (save && durableChange(event)) persist();
     }
     if (state.notice !== previous.notice) expireNotice();
     if (event.type === "message-upserted") handleLiveMessage(event.message);
     if (event.type === "typing") expireIncomingTyping(event.chatGuid, event.display);
+  }
+
+  function notify(): void {
+    if (notifyTimer) clearTimeout(notifyTimer);
+    notifyTimer = undefined;
+    if (!changed || closed) return;
+    changed = false;
+    for (const listener of listeners) listener();
   }
 
   // A notice gives way to the key hints again after a while, an error after longer.
@@ -567,6 +583,16 @@ export function createSession(options: SessionOptions): Session {
 
   function act(intent: Intent): void {
     if (closed) return;
+    acting += 1;
+    try {
+      perform(intent);
+    } finally {
+      acting -= 1;
+      if (!acting) notify();
+    }
+  }
+
+  function perform(intent: Intent): void {
     dispatch(intent);
     switch (intent.type) {
       case "open-chat": void loadHistory(intent.chatGuid, "latest"); markRead(intent.chatGuid); break;
@@ -685,6 +711,7 @@ export function createSession(options: SessionOptions): Session {
     closed = true;
     clearRestart();
     if (noticeTimer) clearTimeout(noticeTimer);
+    if (notifyTimer) clearTimeout(notifyTimer);
     if (chatsReload) clearTimeout(chatsReload);
     for (const timer of [...typingStarts.values(), ...typingStops.values(), ...incomingTyping.values(), ...receiptChecks]) clearTimeout(timer);
     typingStarts.clear();

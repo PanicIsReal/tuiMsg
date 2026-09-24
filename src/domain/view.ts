@@ -1,4 +1,5 @@
 import type { ChatGuid } from "./ids.ts";
+import { formatLongWeekday, formatMonthDayYear, formatWeekdayMonthDay } from "./dates.ts";
 import { chatActivity, type Chat, type Message, type Reaction, type TapbackChip, type TextMessage } from "./model.ts";
 
 export type ThreadRow =
@@ -19,9 +20,9 @@ export function dayLabel(ms: number, now = Date.now()): string {
   const days = Math.round((start(new Date(now)) - start(day)) / 86_400_000);
   if (days === 0) return "Today";
   if (days === 1) return "Yesterday";
-  if (days > 1 && days < 7) return day.toLocaleDateString(undefined, { weekday: "long" });
-  if (day.getFullYear() === new Date(now).getFullYear()) return day.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
-  return day.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  if (days > 1 && days < 7) return formatLongWeekday(ms);
+  if (day.getFullYear() === new Date(now).getFullYear()) return formatWeekdayMonthDay(ms);
+  return formatMonthDayYear(ms);
 }
 
 export function foldTapbacks(messages: Message[]): ThreadRow[] {

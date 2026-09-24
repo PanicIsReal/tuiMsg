@@ -1,11 +1,12 @@
 import { useMouse } from "./mouse.tsx";
-import { useLayoutEffect, useRef, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useInput, type DOMElement } from "ink";
 import type { Attachment, HistoryState, Message } from "../domain/model.ts";
 import type { ChatGuid, MessageGuid } from "../domain/ids.ts";
 import { foldTapbacks, lastOwnReceipt, sameSender } from "../domain/view.ts";
 import { Bubble } from "./Bubble.tsx";
 import { bar, colors, personColor } from "./theme.ts";
+import { useStableCallback } from "./stable.ts";
 
 export type TranscriptProps = {
   chatGuid: ChatGuid; title: string; subtitle: { text: string; color: string }; group?: boolean; messages: Message[]; typing: boolean;
@@ -22,8 +23,11 @@ export function Transcript(props: TranscriptProps) {
   const elements = useRef(new Map<MessageGuid, DOMElement>());
   const [scroll, setScroll] = useState(0);
   const previous = useRef<{ chat: ChatGuid; cursor: MessageGuid | null; offset: number; height: number; width: number; maximum: number } | null>(null);
-  const rows = foldTapbacks(props.messages);
-  const lastOwn = lastOwnReceipt(props.messages);
+  // Kept while the messages are, so each row's chips keep their identity and bubbles skip rendering.
+  const rows = useMemo(() => foldTapbacks(props.messages), [props.messages]);
+  const lastOwn = useMemo(() => lastOwnReceipt(props.messages), [props.messages]);
+  const select = useStableCallback(props.onSelect);
+  const viewAttachment = useStableCallback((attachment: Attachment) => props.onViewAttachment?.(attachment));
   const selected = props.cursor ?? props.messages.findLast(message => message.kind !== "tapback")?.guid ?? null;
   const viewportHeight = Math.max(1, props.height - 3 - (props.readError ? 1 : 0));
   const contentWidth = Math.max(1, props.width - 4);
@@ -71,7 +75,7 @@ export function Transcript(props: TranscriptProps) {
           if (row.kind === "day") return <DayRule key={row.key} label={row.label} width={contentWidth} />;
           const preceding = rows[index - 1];
           return <Box key={row.key} flexShrink={0} ref={element => { if (element) elements.current.set(row.message.guid, element); else elements.current.delete(row.message.guid); }}>
-            <Bubble message={row.message} chips={row.chips} grouped={preceding?.kind === "message" && sameSender(preceding.message, row.message)} showReceipt={lastOwn?.guid === row.message.guid} selected={props.focused && selected === row.message.guid} tint={props.group && row.message.kind === "text" && !row.message.isFromMe ? personColor(row.message.from.address) : undefined} width={contentWidth} onSelect={() => props.onSelect(row.message.guid)} onViewAttachment={props.onViewAttachment} loadAttachment={props.loadAttachment} />
+            <Bubble message={row.message} chips={row.chips} grouped={preceding?.kind === "message" && sameSender(preceding.message, row.message)} showReceipt={lastOwn?.guid === row.message.guid} selected={props.focused && selected === row.message.guid} tint={props.group && row.message.kind === "text" && !row.message.isFromMe ? personColor(row.message.from.address) : undefined} width={contentWidth} onSelect={select} onViewAttachment={viewAttachment} loadAttachment={props.loadAttachment} />
           </Box>;
         })}
         {props.history.kind === "ready" && !props.messages.length ? <Box marginTop={1} flexShrink={0}><Text color={colors.subtle}>No messages yet</Text></Box> : null}

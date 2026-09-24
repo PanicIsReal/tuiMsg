@@ -2,9 +2,10 @@ import { useMouse } from "./mouse.tsx";
 import { Box, Text, type DOMElement } from "ink";
 import { memo, useRef } from "react";
 import { colors, useTheme } from "./theme.ts";
+import type { ChatGuid } from "../domain/ids.ts";
 
 export type ListRowProps = {
-  id: string;
+  chatGuid: ChatGuid;
   title: string;
   preview: string;
   time: string;
@@ -16,7 +17,8 @@ export type ListRowProps = {
   focused: boolean;
   sms: boolean;
   width: number;
-  onOpen: () => void;
+  // Stable across renders, so the memo holds: each row passes its own conversation.
+  onOpen: (chatGuid: ChatGuid) => void;
 };
 
 export const ListRow = memo(function ListRow(props: ListRowProps) {
@@ -24,7 +26,7 @@ export const ListRow = memo(function ListRow(props: ListRowProps) {
   const element = useRef<DOMElement>(null);
   useMouse(element, event => {
     if (event.kind !== "click" || event.button !== "left") return false;
-    props.onOpen();
+    props.onOpen(props.chatGuid);
     return true;
   });
   // Column 0 carries the row's state: a bar for the selection, else a dot for unread, else a

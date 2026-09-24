@@ -6,6 +6,8 @@ import { memo, useRef } from "react";
 import { appMessageLabel, type Attachment, type Message, type TapbackChip } from "../domain/model.ts";
 import { bar, colors, reactionGlyph, useTheme } from "./theme.ts";
 import { cleanText } from "../domain/text.ts";
+import type { MessageGuid } from "../domain/ids.ts";
+import { formatClock } from "../domain/dates.ts";
 import { hyperlink, linkParts } from "../domain/links.ts";
 
 export type BubbleProps = {
@@ -18,7 +20,8 @@ export type BubbleProps = {
   tint?: string | undefined;
   width: number;
   loadAttachment?: ((attachment: Attachment) => Promise<Uint8Array>) | undefined;
-  onSelect: () => void;
+  // Stable across renders, so the memo holds: each bubble passes its own message.
+  onSelect: (messageGuid: MessageGuid) => void;
   onViewAttachment?: ((attachment: Attachment) => void) | undefined;
 };
 
@@ -32,7 +35,7 @@ export const Bubble = memo(function Bubble(props: BubbleProps) {
   const element = useRef<DOMElement>(null);
   useMouse(element, event => {
     if (event.kind !== "click" || event.button !== "left") return false;
-    props.onSelect();
+    props.onSelect(props.message.guid);
     return true;
   });
   const { message } = props;
@@ -55,7 +58,7 @@ export const Bubble = memo(function Bubble(props: BubbleProps) {
     <Box borderStyle={props.selected ? SELECTED_BAR : MESSAGE_BAR} borderTop={false} borderRight={false} borderBottom={false}
       borderLeftColor={props.selected ? colors.text : mine ? colors.accent : props.tint ?? colors.faint} borderBackgroundColor={colors.canvas} paddingLeft={1} flexDirection="column" flexShrink={0}>
       {!props.grouped ? <Box height={1} flexShrink={0}>
-        <Text wrap="truncate-end"><Text bold color={mine ? colors.accent : props.tint ?? colors.text}>{sender}</Text><Text color={colors.subtle}>  {formatMessageTime(message.sentAt)}</Text>{message.from.service === "SMS" ? <Text color={colors.sms}>  SMS</Text> : null}</Text>
+        <Text wrap="truncate-end"><Text bold color={mine ? colors.accent : props.tint ?? colors.text}>{sender}</Text><Text color={colors.subtle}>  {formatClock(message.sentAt)}</Text>{message.from.service === "SMS" ? <Text color={colors.sms}>  SMS</Text> : null}</Text>
       </Box> : null}
       <Box flexDirection="row" flexShrink={0}>
         <Box flexDirection="column" flexGrow={1} flexShrink={1}>
@@ -90,7 +93,7 @@ function receiptLabel(message: Extract<Message, { kind: "text" }>): string {
   if (message.status === "pending") return "Sending";
   if (message.status === "failed") return "Not delivered · ! to retry";
   if (message.status === "uncertain") return "Delivery uncertain · ! to retry";
-  if (message.status === "read" && message.readAt) return `Read ${formatMessageTime(message.readAt)}`;
+  if (message.status === "read" && message.readAt) return `Read ${formatClock(message.readAt)}`;
   if (message.status === "delivered") return "Delivered";
   return "";
 }
@@ -106,9 +109,6 @@ function normalizeBody(body: string): string {
   return lines.join("\n");
 }
 
-function formatMessageTime(ms: number): string {
-  return new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
-}
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
