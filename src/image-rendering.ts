@@ -5,7 +5,8 @@ import { promisify } from "node:util";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ScreenTracker, type Damage } from "./screen-tracker.ts";
+import { ScreenTracker } from "./screen-tracker.ts";
+import { FrameDiff, frameText, noDamage, type Damage } from "./frame-diff.ts";
 import { decodeIndexedPng, encodeSixel, type IndexedImage } from "./sixel.ts";
 import { kittyFromEnvironment, type CellSize, type Graphics } from "./terminal-graphics.ts";
 
@@ -147,10 +148,15 @@ export function deleteKittyImage(id: number): string {
 type NativeImage = { png?: Buffer | undefined; sixel?: string[] | undefined; measure: () => ImageArea | null };
 // `shown` is where a sixel's strips were last drawn in full; `written` is where its
 // placeholder sat in the last frame Ink wrote, which can trail the layout by a frame.
+// `visible` is where its pixels are on screen now: frames only rewrite cells that changed,
+// so when the picture moves or goes, its old cells are rewritten on purpose to clear them.
 type RegisteredImage = NativeImage & {
   transmitted: boolean; placed: boolean; shown: ImageArea | null; written?: ImageArea | null;
+  visible?: ImageArea | null;
   settle?: { timer: ReturnType<typeof setTimeout>; area: ImageArea } | undefined;
 };
+// Pixels of pictures that went away, cleared by the next frame.
+const leftBehind: ImageArea[] = [];
 const images = new Map<number, RegisteredImage>();
 let nextImageId = 17000;
 export function registerImage(image: NativeImage): () => void {
@@ -160,6 +166,7 @@ export function registerImage(image: NativeImage): () => void {
   return () => {
     const removed = images.get(id);
     if (removed?.settle) clearTimeout(removed.settle.timer);
+    if (removed?.visible) leftBehind.push(removed.visible);
     images.delete(id);
     // A sixel leaves with the text that Ink writes over it.
     if (process.stdout.isTTY && !removed?.sixel) process.stdout.write(deleteKittyImage(id));
@@ -181,7 +188,7 @@ export function repaintImages(): void {
     const protocol = activeGraphics().protocol;
     if (protocol === "kitty") paintImages();
     // Moved sixels are redrawn when Ink rewrites their rows; only new ones are drawn here.
-    else if (protocol === "sixel") writeSixels(sixelRepaint({ all: false, rows: new Set() }, sixelTarget().rows ?? 24, sixelTarget().columns ?? 80, true));
+    else if (protocol === "sixel") writeSixels(sixelRepaint(noDamage(), sixelTarget().rows ?? 24, sixelTarget().columns ?? 80, true));
   });
 }
 
@@ -218,6 +225,7 @@ function settleLater(image: RegisteredImage, area: ImageArea): void {
       return;
     }
     image.shown = area;
+    image.visible = area;
     writeSixels(`\x1b7${stripsAt(image.sixel, area, () => true)}\x1b8`);
   }, SETTLE_MS) };
 }
@@ -229,7 +237,7 @@ function stripsAt(strips: string[], area: ImageArea, include: (row: number) => b
 }
 
 // Draws the sixel strips an Ink write erased; onlyNew draws sixels not yet on screen. A moved
-// picture waits to settle (Ink has already rewritten its rows with the placeholder). It must
+// picture waits to settle (its old cells were cleared as the frame was written). It must
 // stay clear of the last row, since finishing an image there scrolls Ink's frame.
 export function sixelRepaint(damage: Damage, rows: number, columns: number, onlyNew = false): string {
   let output = "";
@@ -252,11 +260,26 @@ export function sixelRepaint(damage: Damage, rows: number, columns: number, only
       image.settle = undefined;
     }
     if (onlyNew && shown) continue;
-    const touched = (row: number) => damage.all || damage.rows.has(area.y + row);
-    // The first time every strip goes out; afterwards only the ones under rewritten rows.
-    const whole = onlyNew || (!shown && Array.from({ length: area.height }, (_, row) => touched(row)).some(Boolean));
+    // Only writes that reach the picture's own columns drop its pixels.
+    const touched = (row: number) => damage.all || damage.rows.has(area.y + row) ||
+      (damage.spans.get(area.y + row)?.some(([start, end]) => start < area.x + area.width && end > area.x) ?? false);
+    // The first time every strip goes out, once a frame has written the placeholder. So does
+    // a picture back where it was drawn whose cells were cleared, once a frame writes there:
+    // the layout runs ahead of the frames, and drawing sooner would be written over. With no
+    // such write yet it settles instead. Otherwise only the strips under rewritten cells go.
+    const anyTouched = Array.from({ length: area.height }, (_, row) => touched(row)).some(Boolean);
+    const onScreen = Boolean(image.visible && sameArea(image.visible, area));
+    if (!onlyNew && shown && !onScreen && !anyTouched) {
+      settleLater(image, area);
+      continue;
+    }
+    const whole = onlyNew || !onScreen && anyTouched;
     output += stripsAt(image.sixel, area, (row) => whole || touched(row));
-    if (whole) image.shown = area;
+    if (whole) {
+      image.shown = image.visible = area;
+      if (image.settle) clearTimeout(image.settle.timer);
+      image.settle = undefined;
+    }
   }
   return output ? `\x1b7${output}\x1b8` : "";
 }
@@ -281,13 +304,53 @@ let terminal: NodeJS.WriteStream | undefined;
 export function trackTerminal(stream: NodeJS.WriteStream): NodeJS.WriteStream {
   terminal = stream;
   const tracker = new ScreenTracker(() => stream.rows ?? 24);
+  const frames = new FrameDiff();
+  let alternate = false;
   const decoder = new StringDecoder("utf8");
+  // Ink writes each frame as three pieces (begin sync, frame, end sync). Over SSH with no
+  // delay each write can become its own packet, costing more than a keystroke's changes, so
+  // the writes of one turn of the event loop leave as one.
+  let pending: (string | Uint8Array)[] = [];
+  let queued = false;
+  const take = (): Buffer => {
+    const joined = Buffer.concat(pending.map((part) => typeof part === "string" ? Buffer.from(part) : part));
+    pending = [];
+    return joined;
+  };
   const write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
     const text = typeof chunk === "string" ? chunk : decoder.write(Buffer.from(chunk));
-    const damage = tracker.feed(text);
-    const repaint = activeGraphics().protocol === "sixel" ? sixelRepaint(damage, stream.rows ?? 24, stream.columns ?? 80) : "";
-    const data = !repaint ? chunk : typeof chunk === "string" ? chunk + repaint : Buffer.concat([Buffer.from(chunk), Buffer.from(repaint)]);
-    return Reflect.apply(stream.write, stream, [data, ...rest]) as boolean;
+    const rows = stream.rows ?? 24;
+    const columns = stream.columns ?? 80;
+    // In the alternate screen, Ink's frames go out as the cells that changed.
+    const frame = alternate ? frameText(text) : undefined;
+    if (frame !== undefined) clearMovedSixels(frames, rows, columns);
+    const drawn = frame === undefined ? undefined : frames.render(frame, columns, rows);
+    let data: string | Uint8Array = chunk;
+    let damage: Damage;
+    if (drawn) {
+      data = drawn.output;
+      damage = drawn.damage;
+      tracker.feed(drawn.output);
+    } else {
+      damage = tracker.feed(text);
+      if (text.includes("\x1b[?1049h")) alternate = true;
+      if (text.includes("\x1b[?1049l")) alternate = false;
+      // Anything else that changed the screen leaves the model of it behind.
+      if (damage.all || damage.rows.size || frame !== undefined) frames.invalidate();
+    }
+    const repaint = activeGraphics().protocol === "sixel" ? sixelRepaint(damage, rows, columns) : "";
+    pending.push(data, repaint);
+    // A write that wants to know when it is done goes out now, with whatever came before it.
+    if (rest.some((value) => typeof value === "function")) return Reflect.apply(stream.write, stream, [take(), ...rest]) as boolean;
+    if (!queued) {
+      queued = true;
+      queueMicrotask(() => {
+        queued = false;
+        const joined = take();
+        if (joined.length) Reflect.apply(stream.write, stream, [joined]);
+      });
+    }
+    return true;
   };
   return new Proxy(stream, {
     get(target, property) {
@@ -296,6 +359,22 @@ export function trackTerminal(stream: NodeJS.WriteStream): NodeJS.WriteStream {
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
+}
+
+// A write only drops a picture from the cells it covers, and frames now skip unchanged
+// cells, so the cells a sixel moved off or left behind are rewritten on purpose.
+function clearMovedSixels(frames: FrameDiff, rows: number, columns: number): void {
+  const force = (area: ImageArea) => {
+    for (let row = area.y; row < area.y + area.height; row++) frames.force(row, area.x, area.x + area.width);
+  };
+  for (const area of leftBehind.splice(0)) force(area);
+  for (const image of images.values()) {
+    if (!image.visible) continue;
+    const area = sixelArea(image, rows, columns);
+    if (area && sameArea(area, image.visible)) continue;
+    force(image.visible);
+    image.visible = null;
+  }
 }
 
 function paintImages(): void {

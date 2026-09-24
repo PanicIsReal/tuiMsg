@@ -12,8 +12,9 @@ import { FakeImsg } from "../src/imsg/fake.ts";
 import { createSession } from "../src/session.ts";
 import { SixelTerminal, sixelProblems } from "./support/sixel-terminal.ts";
 
-// The whole app, in Ink's production mode (incremental lines, synchronized output, the
-// alternate screen), writing to a model of Windows Terminal's sixel behavior.
+// The whole app, rendered as the CLI renders it (whole frames diffed into changed cells,
+// synchronized output, the alternate screen), writing to a model of Windows Terminal's
+// sixel behavior.
 
 class FakeTerminal extends EventEmitter {
   isTTY = true;
@@ -78,7 +79,7 @@ describe("sixel previews", () => {
     const app = render(createElement(App, { session }), {
       stdout: trackTerminal(out as unknown as NodeJS.WriteStream), stdin: keyboard as unknown as NodeJS.ReadStream,
       stderr: new FakeTerminal(100, 30, () => undefined) as unknown as NodeJS.WriteStream,
-      interactive: true, alternateScreen: true, incrementalRendering: true, exitOnCtrlC: false, patchConsole: false,
+      interactive: true, alternateScreen: true, incrementalRendering: false, exitOnCtrlC: false, patchConsole: false,
       onRender: () => repaintImages(),
     });
     const problems = () => sixelProblems(terminal, sixelPlacements(out.rows, out.columns));
@@ -113,8 +114,7 @@ describe("sixel previews", () => {
       await until(() => sixelPlacements(out.rows, out.columns).length === 2, "both previews registered");
       await settled("both previews on screen");
 
-      // Moving through the list rewrites whole lines, including image rows; only the
-      // strips on those rows go out again.
+      // Moving through the list rewrites only list cells, so no picture goes out again.
       await press("\t");
       await press("\t");
       expect(session.getSnapshot().input.kind).toBe("list");
@@ -123,7 +123,7 @@ describe("sixel previews", () => {
         const before = terminal.sixelBytes;
         await press(key);
         await settled(`the list after ${key}`);
-        expect(terminal.sixelBytes - before).toBeLessThan(full / 2);
+        expect(terminal.sixelBytes - before).toBe(0);
       }
 
       await press("\t");

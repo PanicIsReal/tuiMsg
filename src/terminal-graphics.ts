@@ -8,10 +8,14 @@ import type { TerminalColors } from "./terminal-colors.ts";
 export type GraphicsProtocol = "kitty" | "sixel" | "blocks";
 export type CellSize = { width: number; height: number };
 export type Graphics = { protocol: GraphicsProtocol; cell: CellSize };
-export type ProbeReplies = { attributes?: number[]; cell?: CellSize; textArea?: CellSize; colors?: TerminalColors; background?: "light" | "dark" };
+// `roundTrip` is how long the terminal took to answer, in ms: over SSH, the link's latency.
+export type ProbeReplies = { attributes?: number[]; cell?: CellSize; textArea?: CellSize; colors?: TerminalColors; background?: "light" | "dark"; roundTrip?: number };
 
 // Windows Terminal and the VT340 lay sixels out on 10×20 pixel cells.
 const VT340_CELL: CellSize = { width: 10, height: 20 };
+// A photo preview is about 100 KB as sixel or kitty graphics and about 8 KB as colored
+// blocks. Over a link this slow to answer, blocks keep the screen responsive.
+const SLOW_LINK_MS = 250;
 // Terminals answer in order, and every one answers DA1, so it goes last and marks the end.
 const QUERY = "\x1b]10;?\x07\x1b]11;?\x07\x1b[16t\x1b[14t\x1b[c";
 // Windows Terminal 1.22 previews before 1.22.2702 dropped the ESC from replies relayed through
@@ -58,6 +62,13 @@ function colorChannels(spec: string): number[] {
 // cell size means no sixel at all.
 export function chooseGraphics(env: NodeJS.ProcessEnv, replies: ProbeReplies, grid: { columns: number; rows: number }): Graphics {
   const forced = env.TUIMSG_IMAGES?.toLowerCase();
+  const graphics = pickGraphics(env, replies, grid);
+  if (!forced && graphics.protocol !== "blocks" && (replies.roundTrip ?? 0) > SLOW_LINK_MS) return { protocol: "blocks", cell: graphics.cell };
+  return graphics;
+}
+
+function pickGraphics(env: NodeJS.ProcessEnv, replies: ProbeReplies, grid: { columns: number; rows: number }): Graphics {
+  const forced = env.TUIMSG_IMAGES?.toLowerCase();
   const measured = usableCell(replies.cell) ?? usableCell(replies.textArea && grid.columns > 0 && grid.rows > 0
     ? { width: Math.floor(replies.textArea.width / grid.columns), height: Math.floor(replies.textArea.height / grid.rows) }
     : undefined);
@@ -86,7 +97,8 @@ export function probeTerminal(input: NodeJS.ReadStream, output: NodeJS.WriteStre
       const typed = received.replace(REPLY, "");
       try { if (typed) input.unshift(Buffer.from(typed, "latin1")); } catch { /* the keys are lost, nothing else */ }
       if (!wasRaw) input.setRawMode(false);
-      resolve(parseProbeReplies(received));
+      const replies = parseProbeReplies(received);
+      resolve(replies.attributes ? { ...replies, roundTrip: Math.round(performance.now() - sent) } : replies);
     };
     const onReadable = () => {
       for (let chunk: Buffer | string | null = input.read(); chunk !== null; chunk = input.read()) {
@@ -97,6 +109,7 @@ export function probeTerminal(input: NodeJS.ReadStream, output: NodeJS.WriteStre
     };
     timer = setTimeout(finish, timeoutMs);
     input.on("readable", onReadable);
+    const sent = performance.now();
     output.write(QUERY);
   });
 }

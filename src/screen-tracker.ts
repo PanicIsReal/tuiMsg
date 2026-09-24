@@ -1,9 +1,10 @@
-// Follows the cursor through Ink's output to learn which screen rows each write touched.
-// Sixel pixels live in the terminal's cells, and a terminal drops them wherever text is
-// written or erased, so an image under a rewritten row has to be drawn again.
-// Only rows are tracked: Ink writes whole lines from column 0 and never relies on wrap.
+import { noDamage, type Damage } from "./frame-diff.ts";
 
-export type Damage = { all: boolean; rows: Set<number> };
+// Follows the cursor through output other than Ink's frames (those are diffed cell by cell)
+// to learn which screen rows each write touched. Sixel pixels live in the terminal's cells,
+// and a terminal drops them wherever text is written or erased, so an image under a
+// rewritten row has to be drawn again. Such writes are rare, so whole rows are enough.
+export type { Damage };
 
 type State = "ground" | "escape" | "escape-intermediate" | "csi" | "string" | "string-escape";
 
@@ -14,7 +15,7 @@ export class ScreenTracker {
   private params = "";
   // OSC strings may end with BEL; DCS, APC, PM and SOS only with ST.
   private bellEnds = false;
-  private damage: Damage = { all: false, rows: new Set() };
+  private damage: Damage = noDamage();
 
   constructor(private readonly height: () => number) {}
 
@@ -22,7 +23,7 @@ export class ScreenTracker {
   feed(text: string): Damage {
     for (let index = 0; index < text.length; index++) this.step(text.charCodeAt(index));
     const damage = this.damage;
-    this.damage = { all: false, rows: new Set() };
+    this.damage = noDamage();
     return damage;
   }
 

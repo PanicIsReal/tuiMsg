@@ -37,6 +37,14 @@ describe("choosing how to draw pictures", () => {
     expect(chooseGraphics({ TERM: "xterm-kitty", TMUX: "/tmp/tmux" }, parseProbeReplies(WINDOWS_TERMINAL), grid).protocol).toBe("sixel");
   });
 
+  it("draws colored blocks over a slow link unless told otherwise", () => {
+    const slow = { ...parseProbeReplies(WINDOWS_TERMINAL), roundTrip: 400 };
+    expect(chooseGraphics({}, slow, grid)).toEqual({ protocol: "blocks", cell: { width: 10, height: 20 } });
+    expect(chooseGraphics({ TERM: "xterm-kitty" }, slow, grid).protocol).toBe("blocks");
+    expect(chooseGraphics({ TUIMSG_IMAGES: "sixel" }, slow, grid).protocol).toBe("sixel");
+    expect(chooseGraphics({}, { ...slow, roundTrip: 80 }, grid).protocol).toBe("sixel");
+  });
+
   it("honors TUIMSG_IMAGES", () => {
     expect(chooseGraphics({ TUIMSG_IMAGES: "blocks" }, parseProbeReplies(WINDOWS_TERMINAL), grid).protocol).toBe("blocks");
     expect(chooseGraphics({ TUIMSG_IMAGES: "sixel" }, {}, grid)).toEqual({ protocol: "sixel", cell: { width: 10, height: 20 } });
@@ -89,6 +97,8 @@ describe("probing the terminal", () => {
     expect(written).toEqual(["\x1b]10;?\x07\x1b]11;?\x07\x1b[16t\x1b[14t\x1b[c"]);
     expect(replies.cell).toEqual({ width: 10, height: 20 });
     expect(replies.attributes).toContain(4);
+    expect(replies.roundTrip).toBeGreaterThanOrEqual(0);
+    expect(replies.roundTrip).toBeLessThan(1_000);
     expect(input.modes).toEqual([true, false]);
     expect(String(input.read())).toBe("q");
   });

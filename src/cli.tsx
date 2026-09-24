@@ -26,7 +26,8 @@ Set IMSG_PATH to use a specific imsg binary.
 Copy uses OSC 52 so SSH sessions can write the local clipboard.
 Attachments opened over SSH are saved on the Mac and their path is shown.
 Pictures use kitty graphics or sixel (Windows Terminal 1.22+) when the terminal
-supports them, else colored blocks. TUIMSG_IMAGES=kitty|sixel|blocks overrides.
+supports them, else colored blocks; over a link slower than 250 ms, blocks too.
+TUIMSG_IMAGES=kitty|sixel|blocks overrides.
 Shift+L switches light and dark; the choice is saved. With none saved, tuimsg
 matches the terminal's background. TUIMSG_THEME=light|dark|auto overrides.
 While it runs, the terminal's default colors follow the theme; quitting restores them.
@@ -116,13 +117,14 @@ async function main(): Promise<void> {
   });
   try {
     app = render(<App session={session} />, {
-      // Sixels vanish under rewritten text, so Ink's writes are watched to redraw them.
+      // Ink hands each whole frame to the tracked terminal, which sends only the cells that
+      // changed (a keystroke is then a few hundred bytes over SSH) and redraws the sixels
+      // that a write erased.
       stdout: trackTerminal(process.stdout),
       exitOnCtrlC: false,
       patchConsole: false,
       alternateScreen: true,
-      // Rewrite only changed lines; a full redraw per keystroke is slow over SSH.
-      incrementalRendering: true,
+      incrementalRendering: false,
       interactive: true,
       onRender: () => repaintImages(),
     });

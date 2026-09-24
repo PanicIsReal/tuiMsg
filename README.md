@@ -58,7 +58,7 @@ Things that behave differently in a remote terminal:
 - **Window edges:** Windows Terminal draws padding around the text grid, plus a sliver where the window is not a whole number of rows and columns. `tuimsg` colors them to match the theme while it runs. To remove the padding, set it to 0 under **Settings → your profile → Appearance → Padding**.
 - **Image previews:** Windows Terminal 1.22 and later shows full-resolution photos through sixel. `tuimsg` asks the terminal at startup whether it supports sixel and how many pixels a cell holds, so this also works over SSH. Older Windows Terminal releases, tmux without sixel support, and terminals that don't answer get color half-block previews. See [Images](#images).
 
-Output is incremental, so a keystroke usually redraws only the lines that changed. Animated GIFs keep redrawing while they are on screen, which uses more bandwidth on slow links.
+`tuimsg` sends only the characters that changed on screen, and each update leaves as a single write, so a keystroke typically costs tens to a few hundred bytes. A photo preview is the expensive part: about 100 KB as sixel. When the terminal takes more than 250 ms to answer at startup, as over a slow or distant link, previews start as colored blocks (about 8 KB) instead. `TUIMSG_IMAGES=sixel` brings photos back; `TUIMSG_IMAGES=blocks` keeps blocks on any link. Animated GIFs keep redrawing while they are on screen in block mode.
 
 ## imsg's bridge
 
@@ -127,7 +127,7 @@ How a photo is drawn depends on the terminal:
 - **Sixel:** terminals that report sixel support (attribute 4 of their device attributes) and their cell size in pixels, such as Windows Terminal 1.22+, foot, WezTerm, and mlterm. Each picture is quantized to 256 colors and sent one text row at a time, so when other parts of the screen redraw, only the rows they touch are sent again. A 48 × 10 cell preview is roughly 100 to 150 KB. Animated GIFs show their first frame.
 - **Half blocks:** everything else, including tmux builds without sixel. Each cell shows two colored pixels.
 
-Set `TUIMSG_IMAGES=kitty`, `sixel`, or `blocks` to override the choice, for example `blocks` on a slow link. Opening or saving always uses the original file. Previews decode files up to 32 MB and 40 million pixels. GIFs exceeding 60 frames or a total 40-million-pixel animation budget show a still frame.
+Over a link that takes more than 250 ms to answer the startup probe, previews use blocks. Set `TUIMSG_IMAGES=kitty`, `sixel`, or `blocks` to override the choice. Opening or saving always uses the original file. Previews decode files up to 32 MB and 40 million pixels. GIFs exceeding 60 frames or a total 40-million-pixel animation budget show a still frame.
 
 Message text, names, and filenames are cleaned of terminal control characters before display, so a message cannot ring the bell, move the cursor, or hide a link's destination. A link's text is always its own address, so what you click is what you see.
 
@@ -143,6 +143,10 @@ bun run smoke:images
 ```
 
 The tests cover the domain, the imsg JSON-RPC client and parser, the session against an in-memory imsg, persistence, and Ink input and rendered frames. `--fake` runs the same program as its own imsg child, so the smoke tests exercise the real stdio path without a Mac. The smoke test needs a Bun release with `Bun.Terminal` support. It launches the compiled app in a real PTY and checks sends, text and Enter arriving in one read, `Ctrl+J`, recipient-specific drafts, search, resize, and terminal restoration. Test artifacts are written under `.audit/pty`.
+
+`bun run build` bundles the app, Ink and React included, into `dist/cli.js` with React's production build (see `scripts/build.ts`); only sharp stays outside, since it loads a native library. The build also remembers string widths, which Ink recomputes for every line of every frame, and skips a style comparison Ink makes for every cell.
+
+The terminal writer diffs Ink's frames cell by cell (`src/frame-diff.ts`). Its tests replay the output through a terminal model and check that every update leaves exactly the screen a full redraw would, for the whole app as well as for wide characters, hyperlinks, and resizes.
 
 `test:colors` captures the full Ink interface in both themes at 80 and 180 columns with 256-color output. It checks that every cell paints its own background, so neither theme shows the terminal's default through, and writes ANSI, SVG, and PNG previews under `.audit/colors`. The palette tests also cover 16-color and truecolor output, check that 256-color and truecolor terminals draw the same colors, and check text contrast.
 
