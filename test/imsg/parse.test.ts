@@ -45,6 +45,18 @@ describe("imsg messages", () => {
     expect(message?.kind === "text" && message.body).toBe("click ]8;;https://evil.example/\\https://apple.com]8;;\\ now\nnext    col");
   });
 
+  it("drops the payload files behind link previews and iMessage apps, keeping real attachments' GUIDs", () => {
+    const payload = (name: string, bytes: number) => ({ filename: `~/Library/Messages/Attachments/ab/${name}`, transfer_name: name, uti: "dyn.ah62d4rv4ge81k4puqe", mime_type: "", total_bytes: bytes, original_path: `/Users/me/Library/Messages/Attachments/ab/${name}`, missing: false });
+    const record = parseMessageRecord({
+      id: 7, guid: "link", chat_guid: "any;-;+15550009999", sender: "+15550009999", is_from_me: false,
+      text: "https://open.spotify.com/track/1qnELnw7Cw9Vdjj2p97YpC", created_at: "2026-09-24T12:00:00.000Z",
+      balloon_bundle_id: "com.apple.messages.URLBalloonProvider",
+      attachments: [payload("8121E865-608B-4A19-98D9-FC8EDBEC5DD8.pluginPayloadAttachment", 1_024), payload("9FE887CC-7CE5-4C83-A3C1-F2DE10E53DC3.pluginPayloadAttachment", 75_000),
+        { filename: "photo.jpg", transfer_name: "photo.jpg", mime_type: "image/jpeg", total_bytes: 900, original_path: "/tmp/photo.jpg", missing: false }],
+    });
+    expect(record.messages[0]).toMatchObject({ balloon: "com.apple.messages.URLBalloonProvider", attachments: [{ guid: "link/2", name: "photo.jpg" }] });
+  });
+
   it("maps attachments to local paths and flags ones Messages has not downloaded", () => {
     const parsed = parseMessageRecord(record({ text: "", attachments: [
       { filename: "~/Library/Messages/Attachments/a/b/IMG_1.HEIC", transfer_name: "IMG_1.HEIC", mime_type: "image/heic", total_bytes: 2048, original_path: "/Users/me/Library/Messages/Attachments/a/b/IMG_1.HEIC", missing: false },

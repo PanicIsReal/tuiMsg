@@ -116,10 +116,16 @@ function tapbackKind(type: unknown, emoji: unknown): { reaction: TapbackKind; em
   }
 }
 
+// Messages stores a link preview's image and icon, and an iMessage app's data, as
+// <GUID>.pluginPayloadAttachment files on the message. Nobody sent them as files.
+const PLUGIN_PAYLOAD = /\.pluginPayloadAttachment$/i;
+
 function parseAttachments(value: unknown, message: string): Attachment[] {
   if (!Array.isArray(value)) return [];
+  // Indexes come from the full list, so an attachment's GUID stays the same either way.
   return value.flatMap((entry, index) => {
     if (!isRecord(entry)) return [];
+    if (PLUGIN_PAYLOAD.test(str(entry.transfer_name) ?? "") || PLUGIN_PAYLOAD.test(str(entry.filename) ?? "")) return [];
     const path = str(entry.original_path);
     const name = cleanLine(str(entry.transfer_name) || str(entry.filename)?.split("/").at(-1) || "attachment");
     return [{
@@ -171,10 +177,12 @@ export function parseMessageRecord(value: unknown): ParsedRecord {
 
   const guid = parseMessageGuid(rawGuid);
   const reply = str(value.reply_to_guid) || str(value.thread_originator_guid);
+  const balloon = cleanLine(str(value.balloon_bundle_id) ?? "");
   const text: TextMessage = {
     kind: "text", guid, chatGuid, sentAt, from, isFromMe,
     body: bodyOf(value), attachments: parseAttachments(value.attachments, rawGuid), status: "sent",
     ...(reply ? { replyTo: parseMessageGuid(stripPart(reply)) } : {}),
+    ...(balloon ? { balloon } : {}),
   };
   const messages: Message[] = [text];
   if (Array.isArray(value.reactions)) {

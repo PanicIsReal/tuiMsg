@@ -3,7 +3,7 @@ import { Box, Text, type DOMElement } from "ink";
 import { ImagePreview } from "./ImagePreview.tsx";
 import { isImageAttachment } from "../attachments.ts";
 import { memo, useRef } from "react";
-import type { Attachment, Message, TapbackChip } from "../domain/model.ts";
+import { appMessageLabel, type Attachment, type Message, type TapbackChip } from "../domain/model.ts";
 import { colors, reactionGlyph } from "./theme.ts";
 import { cleanText } from "../domain/text.ts";
 
@@ -48,7 +48,7 @@ export const Bubble = memo(function Bubble(props: BubbleProps) {
       {body ? <Text color={colors.text}>{body}</Text> : null}
       {props.loadAttachment ? imageAttachments.map(attachment => <ImagePreview key={attachment.guid} attachment={attachment} loadAttachment={props.loadAttachment!} width={Math.min(48, contentWidth)} height={props.width < 60 ? 6 : 10} delayMs={150} />) : null}
       {message.attachments.map(attachment => <AttachmentLink key={attachment.guid} label={`${isImageAttachment(attachment) ? "↗" : "↓"} ${attachment.name}  ${formatBytes(attachment.bytes)}`} onOpen={() => props.onViewAttachment?.(attachment)} />)}
-      {!body && !message.attachments.length ? <Text color={colors.subtle}>Empty message</Text> : null}
+      {!body && !message.attachments.length ? <Text color={colors.subtle}>{appMessageLabel(message.balloon) ? `${appMessageLabel(message.balloon)} · shown only in Messages` : "Empty message"}</Text> : null}
       {props.chips.length ? <Text color={colors.secondary}>{props.chips.map(chip => `${chip.reaction === "emoji" ? chip.emoji ?? "?" : reactionGlyph[chip.reaction]}${chip.count > 1 ? ` ×${chip.count}` : ""}`).join("  ")}</Text> : null}
       {props.showReceipt || message.status === "pending" || message.status === "failed" || message.status === "uncertain" ? <Receipt message={message} /> : null}
     </Box>

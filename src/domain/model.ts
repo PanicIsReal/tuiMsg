@@ -25,6 +25,8 @@ export type TextMessage = MessageBase & {
   kind: "text"; from: Handle; isFromMe: boolean; body: string; attachments: Attachment[];
   deliveredAt?: number; readAt?: number; editedAt?: number; replyTo?: MessageGuid;
   status: MessageStatus; tempGuid?: MessageGuid;
+  // Messages' balloon_bundle_id: set for link previews and iMessage app messages.
+  balloon?: string;
 };
 export type TapbackMessage = MessageBase & {
   kind: "tapback"; target: MessageGuid; reaction: TapbackKind; emoji?: string; from: Handle; isFromMe: boolean; removed: boolean;
@@ -127,9 +129,21 @@ export function emptyState(): AppState {
     chatsStatus: "loading",
   };
 }
+// What an iMessage app message is, for ones that carry no text a terminal can show.
+// Link previews (URLBalloonProvider) have their URL as text, so they need no label.
+export function appMessageLabel(balloon: string | undefined): string | undefined {
+  if (!balloon || balloon === "com.apple.messages.URLBalloonProvider") return undefined;
+  if (balloon.includes("Handwriting")) return "Handwritten message";
+  if (balloon.includes("DigitalTouch")) return "Digital Touch message";
+  if (balloon.includes("PeerPayment")) return "Apple Cash";
+  if (balloon.includes("FindMy")) return "Location from Find My";
+  if (balloon.includes("SafetyMonitor")) return "Check In";
+  return "Message from an iMessage app";
+}
 export function previewBody(message: Message): string {
   switch (message.kind) {
-    case "text": return message.body || message.attachments.map(a => `[${a.name}]`).join(" ");
+    // U+FFFC is Messages' placeholder for where an attachment sits in the text.
+    case "text": return message.body.replace(/\uFFFC/g, "").trim() || message.attachments.map(a => `[${a.name}]`).join(" ") || appMessageLabel(message.balloon) || "";
     case "tapback": return message.reaction;
     case "group-event": return message.detail;
     case "unsent": return "Unsent a message";
