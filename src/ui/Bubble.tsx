@@ -71,7 +71,7 @@ export const Bubble = memo(function Bubble(props: BubbleProps) {
         {props.chips.length ? <Box flexShrink={0} marginLeft={2}><Text>{props.chips.map((chip, index) => <Text key={`${chip.reaction}${chip.emoji ?? ""}`} color={chip.fromMe ? colors.accent : colors.secondary}>{index ? "  " : ""}{chip.reaction === "emoji" ? chip.emoji ?? "?" : reactionGlyph[chip.reaction]}{chip.count > 1 ? ` ${chip.count}` : ""}</Text>)}</Text></Box> : null}
       </Box>
     </Box>
-    {receipt ? <Box paddingLeft={2} flexShrink={0}><Text wrap="truncate-end" color={message.status === "failed" || message.status === "uncertain" ? colors.warning : colors.subtle}>{receipt}</Text></Box> : null}
+    {receipt ? <Box paddingLeft={2} flexShrink={0}><Text wrap="truncate-end" italic={message.status === "pending"} color={message.status === "failed" || message.status === "uncertain" ? colors.warning : colors.subtle}>{receipt}</Text></Box> : null}
   </Box>;
 });
 
@@ -89,13 +89,16 @@ function Body(props: { text: string }) {
   </Box>;
 }
 
+// Every state has a label, so the line under the newest message stays put from Sending to
+// Read and the conversation does not jump a row while the receipt is on its way.
 function receiptLabel(message: Extract<Message, { kind: "text" }>): string {
-  if (message.status === "pending") return "Sending";
+  if (message.status === "pending") return "Sending…";
   if (message.status === "failed") return "Not delivered · ! to retry";
   if (message.status === "uncertain") return "Delivery uncertain · ! to retry";
-  if (message.status === "read" && message.readAt) return `Read ${formatClock(message.readAt)}`;
+  if (message.status === "read") return message.readAt ? `Read ${formatClock(message.readAt)}` : "Read";
   if (message.status === "delivered") return "Delivered";
-  return "";
+  // Taken by imsg, not yet delivered; SMS often reports nothing more.
+  return "Sent";
 }
 
 function normalizeBody(body: string): string {

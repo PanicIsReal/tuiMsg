@@ -70,7 +70,7 @@ Without the bridge, those keys explain what is missing instead of failing later.
 
 ## Reading the screen
 
-Conversations are on the left; the newest is at the top, a blue dot marks unread ones, and SMS conversations are tagged in green. Every message hangs off a bar on its left: blue for yours, gray for theirs, and a steady color for each person in a group. A run of messages from one person shares one bar. The selected message's bar turns solid, and reactions sit at the right of the message they react to. The bottom line shows the keys for whatever has focus, starting with what the selected message offers, such as `o open link`; `?` lists them all. Messages such as "Copied." or where an attachment was saved take its place for five seconds (errors for ten), or until the next key.
+Conversations are on the left; the newest is at the top, a blue dot marks unread ones, and SMS conversations are tagged in green. Every message hangs off a bar on its left: blue for yours, gray for theirs, and a steady color for each person in a group. A run of messages from one person shares one bar. The selected message's bar turns solid, and reactions sit at the right of the message they react to. Under your newest message, one line follows it from *Sending…* to Sent, Delivered, and Read. The bottom line shows the keys for whatever has focus, starting with what the selected message offers, such as `o open link`; `?` lists them all. Messages such as "Copied." or where an attachment was saved take its place for five seconds (errors for ten), or until the next key.
 
 ## Light and dark
 

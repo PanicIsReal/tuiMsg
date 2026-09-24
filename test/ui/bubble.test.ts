@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createElement } from "react";
 import { render } from "ink-testing-library";
 import { stripVTControlCharacters } from "node:util";
+import chalk from "chalk";
 import { parseChatGuid, parseHandleAddress, parseMessageGuid } from "../../src/domain/ids.ts";
 import { previewBody, type TextMessage } from "../../src/domain/model.ts";
 import { Box } from "ink";
@@ -13,13 +14,43 @@ const message = (partial: Partial<TextMessage>): TextMessage => ({
   from: { address: parseHandleAddress("+15550009999"), service: "iMessage" }, isFromMe: false, body: "", attachments: [], status: "sent", ...partial,
 });
 
-function frame(value: TextMessage): string {
-  const bubble = createElement(Bubble, { message: value, chips: [], showReceipt: false, grouped: true, selected: false, width: 70, onSelect: () => undefined });
+function raw(value: TextMessage, showReceipt = false): string {
+  const bubble = createElement(Bubble, { message: value, chips: [], showReceipt, grouped: true, selected: false, width: 70, onSelect: () => undefined });
   const app = render(createElement(MouseProvider, null, createElement(Box, { width: 70, flexDirection: "column" }, bubble)));
-  const text = stripVTControlCharacters(app.lastFrame() ?? "");
+  const text = app.lastFrame() ?? "";
   app.unmount();
   return text;
 }
+const frame = (value: TextMessage, showReceipt = false) => stripVTControlCharacters(raw(value, showReceipt));
+
+describe("the line under the newest message", () => {
+  const mine = (partial: Partial<TextMessage>) => message({ body: "on my way", isFromMe: true, ...partial });
+
+  it("keeps its place from Sending to Read, so the conversation does not jump", () => {
+    const states: [Partial<TextMessage>, string][] = [
+      [{ status: "pending" }, "Sending…"],
+      [{ status: "sent" }, "Sent"],
+      [{ status: "delivered" }, "Delivered"],
+      [{ status: "read" }, "Read"],
+      [{ status: "read", readAt: Date.parse("2026-09-24T08:12:00") }, "Read 8:12"],
+    ];
+    const heights = states.map(([partial, label]) => {
+      const shown = frame(mine(partial), true);
+      expect(shown).toContain(label);
+      return shown.split("\n").length;
+    });
+    expect(new Set(heights).size).toBe(1);
+  });
+
+  it("sets Sending in italics", () => {
+    const level = chalk.level;
+    chalk.level = 2;
+    try {
+      expect(raw(mine({ status: "pending" }), true)).toMatch(/\x1b\[3m[^\n]*Sending…/);
+      expect(raw(mine({ status: "delivered" }), true)).not.toContain("\x1b[3m");
+    } finally { chalk.level = level; }
+  });
+});
 
 describe("app and link messages", () => {
   it("names an iMessage app message instead of calling it empty", () => {
