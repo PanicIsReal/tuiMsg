@@ -132,6 +132,27 @@ Over a link that takes more than 250 ms to answer the startup probe, previews us
 
 Message text, names, and filenames are cleaned of terminal control characters before display, so a message cannot ring the bell, move the cursor, or hide a link's destination. A link's text is always its own address, so what you click is what you see.
 
+## Benchmark log
+
+When something feels slow, run it with `--benchmark` and use it as usual:
+
+```sh
+tuimsg --benchmark              # writes tuimsg-benchmark-<date>-<time>.log here
+tuimsg --benchmark ~/slow.log   # or to a file you name
+```
+
+Press `F12` at the moment something lags; it drops a `MARK` line into the log. Quitting prints the log's path. The log is written as the app runs, and its summary is added at the end, including when the SSH link drops.
+
+The log records:
+
+- **Startup**, from launch to first frame, imsg online, and the conversation list loaded, and how long the terminal took to answer its startup probe (over SSH, about the link's round trip).
+- **Every key**, from when it was read to when its update left for the terminal. It also records the time taken to handle the key, the time Ink took to render the frame, the time the cell diff took, and the bytes sent. Keys that changed nothing on screen are listed as such.
+- **Every imsg request and event**, with its time and size, and any timeouts or failures.
+- **Pictures and attachments**, with their load and decode times and sixel sizes.
+- **Event-loop stalls** over 100 ms, memory each minute, and a summary with medians, 95th percentiles, and the slowest keys.
+
+It holds timings, sizes, and counts only. It never records message text, names, phone numbers, or addresses. Keys typed into the composer, search, or new-conversation fields are logged only as `typing`. Notices are logged by kind, not text. If the app crashes, the error message is included with the home directory, addresses, and numbers removed. The log shows the machine's CPU, the OS version, the terminal's `TERM`, `TERM_PROGRAM`, and `COLORTERM` settings, and the git commit being run. Read it before sharing.
+
 ## Development and verification
 
 ```sh
@@ -141,6 +162,7 @@ bun run test:colors
 bun run build
 bun run smoke
 bun run smoke:images
+bun run smoke:benchmark
 ```
 
 The tests cover the domain, the imsg JSON-RPC client and parser, the session against an in-memory imsg, persistence, and Ink input and rendered frames. `--fake` runs the same program as its own imsg child, so the smoke tests exercise the real stdio path without a Mac. The smoke test needs a Bun release with `Bun.Terminal` support. It launches the compiled app in a real PTY and checks sends, text and Enter arriving in one read, `Ctrl+J`, recipient-specific drafts, search, resize, and terminal restoration. Test artifacts are written under `.audit/pty`.
@@ -152,5 +174,7 @@ The terminal writer diffs Ink's frames cell by cell (`src/frame-diff.ts`). Its t
 `test:colors` captures the full Ink interface in both themes at 80 and 180 columns with 256-color output. It checks that every cell paints its own background, so neither theme shows the terminal's default through, and writes ANSI, SVG, and PNG previews under `.audit/colors`. The palette tests also cover 16-color and truecolor output, check that 256-color and truecolor terminals draw the same colors, and check text contrast.
 
 `smoke:images` checks local attachment previews, all three rendering paths, expanded viewing, byte-for-byte original saving, resize, and cleanup through the compiled app. Its sixel run answers the startup probe the way Windows Terminal does. The unit tests check sixel output by decoding it back to pixels, and replay the app's output through a model of Windows Terminal's sixel rules to confirm that every preview stays whole as the screen redraws and nothing stale is left behind. None of this substitutes for viewing the result in a real terminal.
+
+`smoke:benchmark` runs the compiled app with `--benchmark` in a PTY and checks that the log has its timeline and summary, and that nothing typed, and no name, number, or message text from the demo, reaches it.
 
 Local tests do not replace trying it against your own Messages database. They never send real messages.

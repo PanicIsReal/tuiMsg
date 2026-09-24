@@ -132,7 +132,7 @@ describe("probing the terminal", () => {
   it("probes even where pictures need no answer, for the theme and the colors to restore", async () => {
     const { input, output, written } = fakeTerminal((_, stream) => setTimeout(() => stream.write("\x1b]11;rgb:ffff/ffff/ffff\x07\x1b[?62;22c"), 5));
     expect(await detectTerminal(input as never, output as never, { TUIMSG_IMAGES: "blocks" }))
-      .toEqual({ graphics: { protocol: "blocks", cell: { width: 10, height: 20 } }, colors: { background: "rgb:ffff/ffff/ffff" }, background: "light" });
+      .toEqual({ graphics: { protocol: "blocks", cell: { width: 10, height: 20 } }, colors: { background: "rgb:ffff/ffff/ffff" }, background: "light", roundTrip: expect.any(Number) });
     expect(written).toHaveLength(1);
   });
 

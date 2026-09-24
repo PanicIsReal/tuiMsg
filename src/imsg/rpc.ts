@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
+import { benchmark } from "../benchmark.ts";
 
 // JSON-RPC 2.0 over newline-delimited JSON, as spoken by `imsg rpc` on stdin/stdout.
 
@@ -45,7 +46,7 @@ export class ImsgMissingError extends RpcClosedError {
   }
 }
 
-type Pending = { method: string; resolve: (value: unknown) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> };
+type Pending = { method: string; sent: number; resolve: (value: unknown) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> };
 
 export class RpcConnection {
   private nextId = 1;
@@ -67,9 +68,10 @@ export class RpcConnection {
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
+        if (benchmark.on) benchmark.request(method, timeoutMs, 0, "timed out");
         reject(new RpcTimeoutError(method));
       }, timeoutMs);
-      this.pending.set(id, { method, resolve: resolve as (value: unknown) => void, reject, timer });
+      this.pending.set(id, { method, sent: performance.now(), resolve: resolve as (value: unknown) => void, reject, timer });
       this.transport.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
     });
   }
@@ -95,6 +97,7 @@ export class RpcConnection {
     if (typeof record !== "object" || record === null || Array.isArray(record)) return;
     const message = record as Record<string, unknown>;
     if (typeof message.method === "string" && !("id" in message)) {
+      if (benchmark.on) benchmark.event(message.method, Buffer.byteLength(line));
       for (const listener of this.notificationListeners) listener(message.method, message.params);
       return;
     }
@@ -103,7 +106,9 @@ export class RpcConnection {
     if (!pending) return;
     this.pending.delete(message.id);
     clearTimeout(pending.timer);
-    if (typeof message.error === "object" && message.error !== null) {
+    const failed = typeof message.error === "object" && message.error !== null;
+    if (benchmark.on) benchmark.request(pending.method, performance.now() - pending.sent, Buffer.byteLength(line), failed ? "error" : undefined);
+    if (failed) {
       const error = message.error as Record<string, unknown>;
       pending.reject(new RpcError(typeof error.code === "number" ? error.code : -32603, typeof error.message === "string" ? error.message : "imsg request failed", error.data));
     } else {
@@ -116,6 +121,7 @@ export class RpcConnection {
     this.failure = error;
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);
+      if (benchmark.on) benchmark.request(pending.method, performance.now() - pending.sent, 0, "failed");
       pending.reject(error);
     }
     this.pending.clear();

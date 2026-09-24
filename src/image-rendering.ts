@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { ScreenTracker } from "./screen-tracker.ts";
 import { FrameDiff, frameText, noDamage, type Damage } from "./frame-diff.ts";
 import { decodeIndexedPng, encodeSixel, type IndexedImage } from "./sixel.ts";
+import { benchmark } from "./benchmark.ts";
 import { kittyFromEnvironment, type CellSize, type Graphics } from "./terminal-graphics.ts";
 
 const MAX_BYTES = 32 * 1024 * 1024;
@@ -48,6 +49,7 @@ export function imageCellSize(width: number, height: number, columns: number, ro
 
 // `background` fills transparent pixels (stickers, PNGs); pass the canvas color behind them.
 export async function decodeImage(bytes: Uint8Array, columns: number, rows: number, signal?: AbortSignal, background = BACKGROUND): Promise<DecodedImage> {
+  const began = performance.now();
   signal?.throwIfAborted();
   if (!bytes.length || bytes.length > MAX_BYTES) throw new Error("Image exceeds the 32 MB preview limit.");
   let source: Buffer = Buffer.from(bytes);
@@ -82,6 +84,12 @@ export async function decodeImage(bytes: Uint8Array, columns: number, rows: numb
     const { data, info } = await pipeline.resize(size.width, size.height * 2, { fit: "fill" })
       .flatten({ background }).removeAlpha().raw().toBuffer({ resolveWithObject: true });
     frames.push({ ansi: halfBlocks(data, info.width, info.height, info.channels), delay: Math.max(80, metadata.delay?.[page] ?? 100), ...(png ? { png } : {}), ...(strips ? { sixel: strips } : {}) });
+  }
+  if (benchmark.on) {
+    benchmark.picture({
+      width: sourceWidth, height: sourceHeight, columns: size.width, rows: size.height, protocol: graphics.protocol, ms: performance.now() - began,
+      bytes: bytes.length, sixel: frames[0]?.sixel?.reduce((total, strip) => total + strip.length, 0) ?? 0,
+    });
   }
   return { frames, ...size, still: pages > frameCount };
 }
@@ -202,7 +210,9 @@ function sixelTarget(): NodeJS.WriteStream {
 
 function writeSixels(output: string): void {
   const target = sixelTarget();
-  if (output && target.isTTY) target.write(output);
+  if (!output || !target.isTTY) return;
+  if (benchmark.on) benchmark.sixel(output.length);
+  target.write(output);
 }
 
 function sameArea(a: ImageArea, b: ImageArea): boolean {
@@ -312,9 +322,12 @@ export function trackTerminal(stream: NodeJS.WriteStream): NodeJS.WriteStream {
   // the writes of one turn of the event loop leave as one.
   let pending: (string | Uint8Array)[] = [];
   let queued = false;
+  let framed = false;
   const take = (): Buffer => {
     const joined = Buffer.concat(pending.map((part) => typeof part === "string" ? Buffer.from(part) : part));
     pending = [];
+    if (benchmark.on) benchmark.flushed(joined.length, framed);
+    framed = false;
     return joined;
   };
   const write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
@@ -324,7 +337,10 @@ export function trackTerminal(stream: NodeJS.WriteStream): NodeJS.WriteStream {
     // In the alternate screen, Ink's frames go out as the cells that changed.
     const frame = alternate ? frameText(text) : undefined;
     if (frame !== undefined) clearMovedSixels(frames, rows, columns);
+    const began = benchmark.on ? performance.now() : 0;
     const drawn = frame === undefined ? undefined : frames.render(frame, columns, rows);
+    if (frame !== undefined) framed = true;
+    if (benchmark.on && drawn) benchmark.diffed(performance.now() - began, Buffer.byteLength(drawn.output), drawn.damage.all);
     let data: string | Uint8Array = chunk;
     let damage: Damage;
     if (drawn) {
@@ -339,6 +355,7 @@ export function trackTerminal(stream: NodeJS.WriteStream): NodeJS.WriteStream {
       if (damage.all || damage.rows.size || frame !== undefined) frames.invalidate();
     }
     const repaint = activeGraphics().protocol === "sixel" ? sixelRepaint(damage, rows, columns) : "";
+    if (benchmark.on && repaint) benchmark.sixel(repaint.length);
     pending.push(data, repaint);
     // A write that wants to know when it is done goes out now, with whatever came before it.
     if (rest.some((value) => typeof value === "function")) return Reflect.apply(stream.write, stream, [take(), ...rest]) as boolean;

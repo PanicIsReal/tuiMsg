@@ -20,6 +20,7 @@
     "test:colors": "env -u NO_COLOR FORCE_COLOR=2 TERM=xterm-256color bun scripts/color-verify.tsx .audit/colors",
     "smoke": "bun scripts/pty-smoke.ts",
     "smoke:images": "bun scripts/image-smoke.ts",
+    "smoke:benchmark": "bun scripts/benchmark-smoke.ts",
     "build": "bun scripts/build.ts",
     "prepack": "bun run build"
   },

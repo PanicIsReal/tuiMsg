@@ -115,8 +115,12 @@ export function probeTerminal(input: NodeJS.ReadStream, output: NodeJS.WriteStre
 }
 
 // Every start probes: besides pictures and the theme, the replies hold the colors to restore.
-export async function detectTerminal(input: NodeJS.ReadStream, output: NodeJS.WriteStream, env: NodeJS.ProcessEnv = process.env): Promise<{ graphics: Graphics; colors: TerminalColors; background?: "light" | "dark" }> {
+export async function detectTerminal(input: NodeJS.ReadStream, output: NodeJS.WriteStream, env: NodeJS.ProcessEnv = process.env): Promise<{ graphics: Graphics; colors: TerminalColors; background?: "light" | "dark"; roundTrip?: number }> {
   const replies = await probeTerminal(input, output);
   const graphics = chooseGraphics(env, replies, { columns: output.columns ?? 0, rows: output.rows ?? 0 });
-  return { graphics, colors: replies.colors ?? {}, ...(replies.background ? { background: replies.background } : {}) };
+  return {
+    graphics, colors: replies.colors ?? {},
+    ...(replies.background ? { background: replies.background } : {}),
+    ...(replies.roundTrip !== undefined ? { roundTrip: replies.roundTrip } : {}),
+  };
 }

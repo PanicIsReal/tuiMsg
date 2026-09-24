@@ -27,13 +27,26 @@ export function parseArgs(argv: string[]): {
   version: boolean
   fake: boolean
   fakeRpc: boolean
+  // Where to write a benchmark log: "" for the default name, undefined when not asked for.
+  benchmark: string | undefined
 } {
   const known = new Set(["--help", "-h", "--version", "-v", "--fake", "--fake-rpc"]);
-  if (argv.some(arg => !known.has(arg))) throw new Error("Unknown option. Run tuimsg --help for usage.");
+  let benchmark: string | undefined;
+  const rest: string[] = [];
+  for (let index = 0; index < argv.length; index++) {
+    const arg = argv[index]!;
+    if (arg === "--benchmark") {
+      const next = argv[index + 1];
+      benchmark = next !== undefined && !next.startsWith("-") ? (index++, next) : "";
+    } else if (arg.startsWith("--benchmark=")) benchmark = arg.slice("--benchmark=".length);
+    else rest.push(arg);
+  }
+  if (rest.some(arg => !known.has(arg))) throw new Error("Unknown option. Run tuimsg --help for usage.");
   return {
-    help: argv.includes("--help") || argv.includes("-h"),
-    version: argv.includes("--version") || argv.includes("-v"),
-    fake: argv.includes("--fake"),
-    fakeRpc: argv.includes("--fake-rpc"),
+    help: rest.includes("--help") || rest.includes("-h"),
+    version: rest.includes("--version") || rest.includes("-v"),
+    fake: rest.includes("--fake"),
+    fakeRpc: rest.includes("--fake-rpc"),
+    benchmark,
   };
 }
