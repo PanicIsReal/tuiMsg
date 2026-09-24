@@ -88,6 +88,7 @@ While `tuimsg` runs, the terminal's own default colors follow the theme (OSC 10 
 | Transcript | `i`, `Enter` | Focus the composer |
 | Composer | `Enter` | Send |
 | Composer | `Ctrl+J` | Insert a newline |
+| Composer | `↑`, `↓` | Move a row up or down in a long draft |
 | Composer | `Esc` | Return to the transcript |
 | Transcript | `Esc` | Return to the list |
 | Panes | `Tab` | Change focus |

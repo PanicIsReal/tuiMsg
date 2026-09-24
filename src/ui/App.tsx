@@ -56,6 +56,8 @@ function AppContent({ session }: AppProps) {
   const listWidth = narrow ? size.width : Math.min(34, Math.max(27, Math.floor(size.width * 0.28)));
   const conversationWidth = narrow ? size.width : size.width - listWidth;
   const laneWidth = Math.min(100, conversationWidth);
+  // A long draft grows the composer to about a third of the screen, then scrolls.
+  const composerRows = Math.max(3, Math.min(10, Math.floor(size.height / 3)));
   const history = selected ? state.history.get(selected.guid) ?? { kind: "unloaded" as const } : { kind: "unloaded" as const };
   const cursor = selected ? state.messageCursor.get(selected.guid) ?? null : null;
 
@@ -72,7 +74,7 @@ function AppContent({ session }: AppProps) {
               {selected ? (
                 <>
                   <Transcript chatGuid={selected.guid} title={selected.title} subtitle={chatSubtitle(selected)} group={selected.kind === "group"} messages={messages}
-                    height={size.height - 1 - composerHeight(draftFor(state, selected.guid), input.kind === "composer")} width={laneWidth}
+                    height={size.height - 1 - composerHeight(draftFor(state, selected.guid), input.kind === "composer", laneWidth, composerRows)} width={laneWidth}
                     typing={Boolean(state.typing.get(selected.guid))} focused={input.kind === "transcript"}
                     cursor={cursor} history={history} readError={state.readPending.get(selected.guid) ?? null}
                     onSelect={(messageGuid) => { if (input.kind === "list" || input.kind === "transcript" || input.kind === "composer") session.act({ type: "select-message", chatGuid: selected.guid, messageGuid }); }}
@@ -80,7 +82,7 @@ function AppContent({ session }: AppProps) {
                     loadAttachment={input.kind === "list" || input.kind === "transcript" || input.kind === "composer" ? session.loadAttachment : undefined}
                     onViewAttachment={(attachment) => { if (input.kind === "list" || input.kind === "transcript" || input.kind === "composer") viewAttachment(session, attachment, { kind: "transcript", chatGuid: selected.guid }); }}
                     onRetryRead={() => session.act({ type: "retry-read", chatGuid: selected.guid })} />
-                  <Composer key={selected.guid} draft={draftFor(state, selected.guid)} service={selected.service} focused={input.kind === "composer"}
+                  <Composer key={selected.guid} draft={draftFor(state, selected.guid)} service={selected.service} focused={input.kind === "composer"} width={laneWidth} maxRows={composerRows}
                     replyingTo={replyLabel(draftFor(state, selected.guid).replyTo, messages)}
                     onChange={(text) => session.act({ type: "draft-set", chatGuid: selected.guid, text })}
                     onSubmit={() => session.act({ type: "send", chatGuid: selected.guid })}

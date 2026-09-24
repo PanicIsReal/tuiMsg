@@ -215,8 +215,20 @@ app.stdin.write("\x1b[200~pasted\ntext?\x1b[201~");
 await setup.flush();
 assert.ok(state.drafts.get(firstChat)?.text.endsWith("CURSOR_ENDpasted\ntext?"));
 assert.equal(intents.filter(intent => intent.type === "send").length, sendsBeforePaste, "pasted newlines must not send messages");
-session.act({ type: "draft-set", chatGuid: firstChat, text: originalDraft });
+// A draft that wraps without new lines shows whole: the composer grows a row at a time.
 setup.resize(120, 30);
+session.act({ type: "draft-set", chatGuid: firstChat, text: "" });
+await setup.flush();
+await setup.mockInput.typeText(`START ${"Long draft ".repeat(20)}FINISH`);
+await setup.flush();
+assert.match(setup.captureCharFrame(), /START[\s\S]*FINISH/, "every row of a wrapped draft must stay visible while typing");
+// Up moves the caret one wrapped row, not to the start of the line.
+setup.mockInput.pressKey("up");
+await setup.mockInput.typeText("^");
+await setup.flush();
+const caretAt = state.drafts.get(firstChat)?.text.indexOf("^") ?? -1;
+assert.ok(caretAt > 6 && caretAt < 200, `up must land in the middle of a wrapped draft, not at ${caretAt}`);
+session.act({ type: "draft-set", chatGuid: firstChat, text: originalDraft });
 await setup.flush();
 
 session.act({ type: "input", input: { kind: "help", returnTo: { kind: "composer", chatGuid: firstChat } } });
