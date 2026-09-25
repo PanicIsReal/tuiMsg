@@ -95,6 +95,8 @@ export function createSession(options: SessionOptions): Session {
   const foregroundWaiters: (() => void)[] = [];
   // One service lookup per chat at a time; a newer message waits and replaces older waiters.
   const serviceLookups = new Map<ChatGuid, { at: number; next?: TextMessage }>();
+  // A conversation shown beside the list that was never loaded is loading its newest page.
+  let showing = false;
   const ackedGuids = new Set<MessageGuid>();
   const localSends = new Map<MessageGuid, LocalSend>();
   const imageCache = new Map<string, Uint8Array>();
@@ -132,9 +134,10 @@ export function createSession(options: SessionOptions): Session {
     return work;
   }
 
-  // Waits for the foreground to be idle; false once this connection is gone.
+  // Waits for the foreground to be idle; false once this connection is gone. Checked again on
+  // waking, since what finished can start more (a shown conversation looks up its service).
   async function gaveWay(active: ImsgClient): Promise<boolean> {
-    if (foreground) await new Promise<void>((resume) => foregroundWaiters.push(resume));
+    while (foreground && client === active && !closed) await new Promise<void>((resume) => foregroundWaiters.push(resume));
     return client === active && !closed;
   }
 
@@ -155,6 +158,21 @@ export function createSession(options: SessionOptions): Session {
     if (state.notice !== previous.notice) expireNotice();
     if (event.type === "message-upserted") handleLiveMessage(event.message);
     if (event.type === "typing") expireIncomingTyping(event.chatGuid, event.display);
+    if (state.selected !== previous.selected) loadShown();
+  }
+
+  // The conversation beside the list follows its highlight. One never loaded gets its newest
+  // page, one at a time: moving quickly through the list asks next for wherever the highlight
+  // is when the last page arrives, not for every conversation it passed. Loaded ones stay
+  // current through the watch.
+  function loadShown(): void {
+    const chatGuid = state.selected;
+    if (closed || showing || !chatGuid || (state.history.get(chatGuid)?.kind ?? "unloaded") !== "unloaded") return;
+    showing = true;
+    void loadHistory(chatGuid, "latest").finally(() => {
+      showing = false;
+      loadShown();
+    });
   }
 
   function notify(): void {
@@ -472,7 +490,8 @@ export function createSession(options: SessionOptions): Session {
         if (mode === "latest") {
           checkReceipt(chatGuid);
           const newest = messages.reduce<Message | undefined>((found, message) => message.kind === "text" && message.sentAt > (found?.sentAt ?? Number.NEGATIVE_INFINITY) ? message : found, undefined);
-          void learnService(chatGuid, newest, active);
+          // The service under the conversation's name is on screen, so background work waits for it.
+          void foregroundWork(learnService(chatGuid, newest, active));
         }
       })
       .catch((error) => dispatch({ type: "history-failed", chatGuid, request, message: errorText(error) }))

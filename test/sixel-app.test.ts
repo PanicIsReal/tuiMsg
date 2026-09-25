@@ -114,17 +114,32 @@ describe("sixel previews", () => {
       await until(() => sixelPlacements(out.rows, out.columns).length === 2, "both previews registered");
       await settled("both previews on screen");
 
-      // Moving through the list rewrites only list cells, so no picture goes out again.
+      // Moving through the list shows each conversation beside it. Riley's pictures go with
+      // hers, leaving nothing behind, and no other conversation here has any.
       await press("\t");
       await press("\t");
       expect(session.getSnapshot().input.kind).toBe("list");
       const full = sixelPlacements(out.rows, out.columns).reduce((total, { strips }) => total + strips.join("").length, 0);
-      for (const key of ["j", "j", "k", "j"]) {
+      for (const key of ["j", "j", "k"]) {
         const before = terminal.sixelBytes;
         await press(key);
         await settled(`the list after ${key}`);
+        expect(sixelPlacements(out.rows, out.columns)).toEqual([]);
         expect(terminal.sixelBytes - before).toBe(0);
       }
+      // Passing over Riley's conversation sends none of its pictures; stopping on it sends each
+      // once more.
+      let before = terminal.sixelBytes;
+      keyboard.press("k");
+      await pause(40);
+      keyboard.press("j");
+      await settled("the list after passing over pictures");
+      expect(terminal.sixelBytes - before).toBe(0);
+      before = terminal.sixelBytes;
+      await press("k");
+      await until(() => sixelPlacements(out.rows, out.columns).length === 2, "the pictures where the highlight stopped");
+      await settled("the pictures where the highlight stopped");
+      expect(terminal.sixelBytes - before).toBeLessThan(full * 1.5);
 
       await press("\t");
       expect(session.getSnapshot().input.kind).toBe("transcript");

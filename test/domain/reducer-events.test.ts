@@ -33,13 +33,41 @@ describe("domain event transitions", () => {
     expect(state.chats.get(merged)?.service).toBe("SMS");
   });
 
-  it("keeps list selection separate from the open conversation", () => {
-    let state = reduce(emptyState(), { type: "chats-loaded", chats: [chat(), chat(secondGuid, "Bob")] });
+  it("shows the highlighted conversation while the list has focus, without opening it", () => {
+    let state = reduce(emptyState(), { type: "chats-loaded", chats: [{ ...chat(), lastActivityAt: 20 }, { ...chat(secondGuid, "Bob"), lastActivityAt: 10, unreadCount: 2 }] });
+    expect(state).toMatchObject({ listCursor: chatGuid, selected: chatGuid });
     state = reduce(state, { type: "move-list", delta: 1 });
-    expect(state.listCursor).toBe(secondGuid);
+    expect(state).toMatchObject({ listCursor: secondGuid, selected: secondGuid, input: { kind: "list" } });
+    // Shown is not read; opening it is.
+    expect(state.chats.get(secondGuid)?.unreadCount).toBe(2);
+    state = reduce(state, { type: "open-chat", chatGuid: secondGuid });
+    expect(state.chats.get(secondGuid)?.unreadCount).toBe(0);
+  });
+
+  it("brings the highlight to a conversation opened another way, so the list goes on showing it", () => {
+    let state = reduce(emptyState(), { type: "chats-loaded", chats: [chat(), chat(secondGuid, "Bob")] });
+    // A click on a row, or a new conversation, opens it wherever the highlight was.
+    state = reduce(state, { type: "open-chat", chatGuid: secondGuid });
+    expect(state).toMatchObject({ selected: secondGuid, listCursor: secondGuid });
+    state = reduce(state, { type: "input", input: { kind: "list" } });
+    expect(state.selected).toBe(secondGuid);
+  });
+
+  it("keeps the open conversation while a search moves the highlight, until the list has focus", () => {
+    let state = reduce(emptyState(), { type: "chats-loaded", chats: [chat(), chat(secondGuid, "Bob")] });
     state = reduce(state, { type: "open-chat", chatGuid });
+    state = reduce(state, { type: "input", input: { kind: "search", returnTo: { kind: "transcript", chatGuid } } });
+    state = reduce(state, { type: "search-set", text: "bob" });
+    expect(state).toMatchObject({ listCursor: secondGuid, selected: chatGuid });
+    state = reduce(state, { type: "input", input: { kind: "transcript", chatGuid } });
     expect(state.selected).toBe(chatGuid);
-    expect(state.listCursor).toBe(secondGuid);
+    state = reduce(state, { type: "input", input: { kind: "list" } });
+    expect(state.selected).toBe(secondGuid);
+    // A search that matches nothing leaves nothing highlighted, so nothing is shown.
+    state = reduce(state, { type: "input", input: { kind: "search", returnTo: { kind: "list" } } });
+    state = reduce(state, { type: "search-set", text: "nobody" });
+    state = reduce(state, { type: "input", input: { kind: "list" } });
+    expect(state).toMatchObject({ listCursor: null, selected: null });
   });
 
   it("owns draft text and replies per chat", () => {

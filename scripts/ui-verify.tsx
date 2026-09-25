@@ -30,9 +30,13 @@ let state: AppState = {
   messages: new Map([[firstChat, [
     { guid: firstMessage, chatGuid: firstChat, kind: "text", from: friend, isFromMe: false, body: "Can you bring the project notes tomorrow?", attachments: [{ guid: "attachment-one", name: "sample.png", mime: "image/png", bytes: syntheticPng.byteLength }], sentAt: Date.now() - 5_000, status: "sent" },
     { guid: secondMessage, tempGuid: secondMessage, chatGuid: firstChat, kind: "text", from: me, isFromMe: true, body: "Yes, I have them ready.", attachments: [], sentAt: Date.now(), status: "uncertain" },
+  ]], [secondChat, [
+    { guid: parseMessageGuid("message-alex"), chatGuid: secondChat, kind: "text", from: { address: parseHandleAddress("+15550002222"), service: "SMS" }, isFromMe: false, body: "Parking is around back", attachments: [], sentAt: Date.now() - 20_000, status: "sent" },
+    { guid: parseMessageGuid("message-alex-reply"), chatGuid: secondChat, kind: "text", from: me, isFromMe: true, body: "See you soon", attachments: [], sentAt: Date.now() - 10_000, status: "sent" },
   ]]]),
-  history: new Map([[firstChat, { kind: "ready", next: { before: Date.now() - 5_000 } }]]),
-  selected: null,
+  history: new Map([[firstChat, { kind: "ready", next: { before: Date.now() - 5_000 } }], [secondChat, { kind: "ready", next: null }]]),
+  // With the list focused, the highlighted conversation is the one shown beside it.
+  selected: firstChat,
   listCursor: firstChat,
   input: { kind: "list" },
 };
@@ -72,7 +76,7 @@ function apply(intent: Intent): void {
   } else if (intent.type === "open-chat") {
     const messages = state.messages.get(intent.chatGuid) ?? [];
     const cursor = messages.findLast((message) => message.kind !== "tapback")?.guid;
-    state = { ...state, selected: intent.chatGuid, input: { kind: "transcript", chatGuid: intent.chatGuid },
+    state = { ...state, selected: intent.chatGuid, listCursor: intent.chatGuid, input: { kind: "transcript", chatGuid: intent.chatGuid },
       messageCursor: cursor ? new Map(state.messageCursor).set(intent.chatGuid, cursor) : state.messageCursor };
   } else if (intent.type === "draft-set") {
     state = { ...state, drafts: new Map(state.drafts).set(intent.chatGuid, { text: intent.text, replyTo: state.drafts.get(intent.chatGuid)?.replyTo ?? null }) };
@@ -88,6 +92,8 @@ function apply(intent: Intent): void {
   } else if (intent.type === "search-set") state = { ...state, search: intent.text };
   else if (intent.type === "select-message") state = { ...state, messageCursor: new Map(state.messageCursor).set(intent.chatGuid, intent.messageGuid) };
   else if (intent.type === "notice") state = { ...state, notice: intent.notice };
+  // As the reducer does: while the list has focus, the highlighted conversation is shown.
+  if (state.input.kind === "list" && state.selected !== state.listCursor) state = { ...state, selected: state.listCursor };
 }
 
 const app = render(<App session={session} />);
@@ -119,16 +125,24 @@ let frame = setup.captureCharFrame();
 saveFrame("frame-120x30.txt", frame);
 assert.match(frame, /Messages/);
 assert.match(frame, /Sam Rive/);
+assert.match(frame, /Yes, I have them ready\./, "the highlighted conversation must show beside the list");
 assert.equal(subscribeCalls, 1);
 assert.equal(peakListeners, 1);
 
+// Moving the highlight shows that conversation without Enter; the list keeps the keys.
 setup.mockInput.pressKey("j");
 await setup.flush();
 assert.equal(state.input.kind, "list");
 assert.equal(state.listCursor, secondChat);
+assert.equal(state.selected, secondChat);
+frame = setup.captureCharFrame();
+assert.match(frame, /Parking is around back/, "moving the highlight must show that conversation");
+assert.doesNotMatch(frame, /Yes, I have them ready\./);
+assert.ok(!intents.some((intent) => intent.type === "open-chat"), "moving the highlight must not open the conversation");
 setup.mockInput.pressEnter();
 await setup.flush();
 assert.equal(state.selected, secondChat);
+assert.equal(state.input.kind, "transcript");
 
 state = { ...state, selected: firstChat, input: { kind: "transcript", chatGuid: firstChat }, messageCursor: new Map(state.messageCursor).set(firstChat, firstMessage) };
 for (const listener of listeners) listener();
@@ -558,14 +572,16 @@ await setup.flush();
 assert.equal(state.notice, null);
 assert.match(setup.captureCharFrame(), /o open link/, "the key hints must come back at the next key");
 // Missing access is explained where the conversation goes, and stays there through keys.
-state = { ...state, connection: "no-access", unavailable: "Cannot read the Messages database.", selected: null, input: { kind: "list" } };
+// Without access there is no list, so no highlighted conversation takes its place.
+const listed = { chats: state.chats, listCursor: state.listCursor };
+state = { ...state, connection: "no-access", unavailable: "Cannot read the Messages database.", chats: new Map(), listCursor: null, selected: null, input: { kind: "list" } };
 for (const listener of listeners) listener();
 session.act({ type: "notice", notice: { kind: "info", text: "Light mode · Shift+L for dark" } });
 setup.mockInput.pressKey("j");
 await setup.flush();
 assert.equal(state.notice, null);
 assert.match(setup.captureCharFrame(), /Messages is not available[\s\S]*Cannot read the Messages database\./);
-state = { ...state, connection: "online", unavailable: null, selected: secondChat, input: { kind: "search", returnTo: { kind: "transcript", chatGuid: secondChat } } };
+state = { ...state, ...listed, connection: "online", unavailable: null, selected: secondChat, input: { kind: "search", returnTo: { kind: "transcript", chatGuid: secondChat } } };
 for (const listener of listeners) listener();
 
 setup.resize(50, 16);

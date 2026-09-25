@@ -47,6 +47,8 @@ export function ImagePreview(props: ImagePreviewProps) {
   const ref = useRef<DOMElement>(null);
   useBoxMetrics(ref);
   const [visible, setVisible] = useState(false);
+  // Whether this picture has been on screen, so one scrolled back into view shows at once.
+  const shown = useRef(false);
   const theme = useTheme();
   useLayoutEffect(repaintImages);
   useEffect(() => observeImageVisibility(() => {
@@ -71,15 +73,19 @@ export function ImagePreview(props: ImagePreviewProps) {
     const graphics = activeGraphics();
     const key = `${props.attachment.guid}|${props.width}x${props.height}|${graphics.protocol}|${graphics.cell.width}x${graphics.cell.height}|${theme}`;
     setFrameIndex(0);
+    const show = (image: DecodedImage) => { shown.current = true; setState({ kind: "ready", image }); };
     const cached = recall(key);
-    if (cached) { setState({ kind: "ready", image: cached }); return; }
+    // A picture showing for the first time waits its delay even when already decoded, so
+    // moving the list's highlight past a conversation sends none of its pictures.
+    if (cached && (shown.current || !props.delayMs)) { show(cached); return; }
     let active = true;
     const controller = new AbortController();
     setState({ kind: "loading" });
     const timer = setTimeout(() => {
+      if (cached) { show(cached); return; }
       void props.loadAttachment(props.attachment)
         .then(bytes => { if (!active) throw new Error("Preview closed"); return decodeImage(bytes, props.width, props.height, controller.signal, canvasHex(theme)); })
-        .then(image => { remember(key, image); if (active) setState({ kind: "ready", image }); })
+        .then(image => { remember(key, image); if (active) show(image); })
         .catch(() => { if (active) setState({ kind: "error" }); });
     }, props.delayMs ?? 0);
     return () => { active = false; controller.abort(); clearTimeout(timer); };

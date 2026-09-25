@@ -54,6 +54,29 @@ describe("session over imsg", () => {
     } finally { await session.close(); }
   });
 
+  it("shows the newest conversation at startup and each highlighted one after it, marking none read", async () => {
+    const sam = parseChatGuid("SMS;-;+15551230002");
+    const { fake, session } = fakeSession({ bridge: true });
+    try {
+      await session.start();
+      await eventually(() => session.getSnapshot().history.get(jane)?.kind === "ready");
+      expect(session.getSnapshot()).toMatchObject({ selected: jane, input: { kind: "list" } });
+      expect(texts(session).map((message) => message.body)).toEqual(["Hey", "You coming tonight?"]);
+      session.act({ type: "move-list", delta: 1 });
+      expect(session.getSnapshot().selected).toBe(sam);
+      await eventually(() => session.getSnapshot().history.get(sam)?.kind === "ready");
+      expect(texts(session, sam).map((message) => message.body)).toEqual(["Parking is around back"]);
+      // Only opening a conversation reads it, which with the bridge tells the sender.
+      expect(session.getSnapshot().chats.get(jane)?.unreadCount).toBe(1);
+      expect(fake.requests.some((request) => request.method === "read")).toBe(false);
+      session.act({ type: "move-list", delta: -1 });
+      session.act({ type: "open-chat", chatGuid: jane });
+      await eventually(() => fake.requests.some((request) => request.method === "read"));
+      expect(fake.requests.filter((request) => request.method === "read").map((request) => request.params.chat_guid)).toEqual([jane]);
+      expect(session.getSnapshot().chats.get(jane)?.unreadCount).toBe(0);
+    } finally { await session.close(); }
+  });
+
   it("names group members from the senders it has seen", async () => {
     const { session } = fakeSession({
       chats: [{ id: 5, guid: "iMessage;+;chat5", identifier: "chat5", service: "iMessage", is_group: true, participants: ["+15550000001", "+15550000002"], unread_count: 0 }],
@@ -388,12 +411,37 @@ describe("loading in the background", () => {
       await eventually(() => session.getSnapshot().chats.has(deep), 10_000);
       session.act({ type: "open-chat", chatGuid: deep });
       await eventually(() => session.getSnapshot().history.get(deep)?.kind === "ready", 10_000);
-      const opened = log.findIndex((entry) => "sent" in entry && entry.method === "messages.history" && entry.params.limit === 50);
+      const opened = log.findIndex((entry) => "sent" in entry && entry.method === "messages.history" && entry.params.limit === 50 && entry.params.chat_id === 66);
       const request = log[opened] as { sent: number };
       const answered = log.findIndex((entry) => "done" in entry && entry.done === request.sent);
       expect(opened).toBeGreaterThan(0);
       expect(log.slice(opened + 1, answered).filter((entry) => "sent" in entry && entry.method !== "read")).toEqual([]);
       expect(texts(session, deep).map((message) => message.body)).toEqual(["hello 65"]);
+    } finally { await session.close(); }
+  });
+
+  it("loads one conversation shown beside the list at a time, then wherever the highlight is", async () => {
+    const fake = new FakeImsg({ ...many(70), delays: { "messages.history": 30 } });
+    const session = createSession({ connect: () => fake.connect(), journal: memoryJournal() });
+    const chat = (index: number) => parseChatGuid(`any;-;${address(index)}`);
+    const pages = () => fake.requests.filter((request) => request.method === "messages.history" && request.params.limit === 50).map((request) => request.params.chat_id);
+    try {
+      await session.start();
+      await eventually(() => session.getSnapshot().history.get(chat(0))?.kind === "ready", 5_000);
+      // Held down, j moves faster than a page arrives: the ones it passed are never asked for.
+      for (let index = 0; index < 5; index++) session.act({ type: "move-list", delta: 1 });
+      expect(session.getSnapshot().selected).toBe(chat(5));
+      await eventually(() => session.getSnapshot().history.get(chat(5))?.kind === "ready", 5_000);
+      expect(pages()).toEqual([1, 2, 6]);
+      expect([2, 3, 4].map((index) => session.getSnapshot().history.has(chat(index)))).toEqual([false, false, false]);
+      // Opening one never waits behind a page loading for the list.
+      session.act({ type: "move-list", delta: 1 });
+      session.act({ type: "move-list", delta: 1 });
+      session.act({ type: "open-chat", chatGuid: chat(7) });
+      expect(pages()).toEqual([1, 2, 6, 7, 8]);
+      await eventually(() => session.getSnapshot().history.get(chat(7))?.kind === "ready", 5_000);
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(pages()).toEqual([1, 2, 6, 7, 8]);
     } finally { await session.close(); }
   });
 });

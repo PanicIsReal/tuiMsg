@@ -137,6 +137,16 @@ function completedHistory(current: HistoryState | undefined, event: Extract<AppE
 }
 
 export function reduce(state: AppState, event: AppEvent, now = Date.now()): AppState {
+  return showHighlighted(step(state, event, now));
+}
+
+// While the list has focus, the conversation beside it is the highlighted one: moving the
+// highlight shows each conversation without opening it, so none is marked read.
+function showHighlighted(state: AppState): AppState {
+  return state.input.kind === "list" && state.selected !== state.listCursor ? { ...state, selected: state.listCursor } : state;
+}
+
+function step(state: AppState, event: AppEvent, now: number): AppState {
   switch (event.type) {
     case "input": return { ...state, input: event.input };
     case "move-list": return { ...state, listCursor: moved(visibleChats(state), state.listCursor, event.delta) };
@@ -144,7 +154,8 @@ export function reduce(state: AppState, event: AppEvent, now = Date.now()): AppS
       const chats = new Map(state.chats);
       const chat = chats.get(event.chatGuid);
       if (chat) chats.set(event.chatGuid, { ...chat, unreadCount: 0 });
-      return { ...state, chats, selected: event.chatGuid, input: { kind: "transcript", chatGuid: event.chatGuid } };
+      // The highlight comes along, so going back to the list keeps this conversation in view.
+      return { ...state, chats, selected: event.chatGuid, listCursor: event.chatGuid, input: { kind: "transcript", chatGuid: event.chatGuid } };
     }
     case "move-message": {
       const guids = (state.messages.get(event.chatGuid) ?? []).filter((message) => message.kind !== "tapback").map((message) => message.guid);
