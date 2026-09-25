@@ -45,7 +45,7 @@ try {
   for (const expected of [
     "tuiMsg benchmark", "Timings, sizes and counts only", "tuimsg      0.2.0", "imsg        demo (--fake)",
     "started", "terminal 100×30", "first frame on screen", "connection online", "conversations ready",
-    "imsg chats.list", "imsg messages.history", "conversation opened", "transcript ready",
+    "imsg chats.list", "imsg messages.history", "conversation shown", "transcript ready",
     "key j · list · on screen", "key enter · list · on screen", "key wheel down · transcript", "key typing · transcript · on screen", "key typing · composer · on screen",
     "key backspace · composer", "MARK (F12)", "key ? · transcript", "resize · 90×28", "details · commit", "end · quit",
     "──── summary", "keys → screen", "slowest keys", "frames", "terminal output", "imsg requests", "none timed out or failed",

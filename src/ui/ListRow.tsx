@@ -10,10 +10,9 @@ export type ListRowProps = {
   preview: string;
   time: string;
   unread: boolean;
-  // The row under the cursor, or the open conversation while the list is not focused.
+  // The row under the cursor, which is also the conversation shown, or the open conversation
+  // while the list is not focused.
   cursor: boolean;
-  // The open conversation, marked faintly while the cursor is elsewhere in the list.
-  active: boolean;
   focused: boolean;
   sms: boolean;
   width: number;
@@ -29,10 +28,9 @@ export const ListRow = memo(function ListRow(props: ListRowProps) {
     props.onOpen(props.chatGuid);
     return true;
   });
-  // Column 0 carries the row's state: a bar for the selection, else a dot for unread, else a
-  // faint bar for the open conversation.
+  // Column 0 carries the row's state: a bar for the selection, else a dot for unread.
   const dot = props.unread && !props.cursor;
-  const bar = props.cursor || (props.active && !dot) ? "▎" : " ";
+  const bar = props.cursor ? "▎" : " ";
   const barColor = props.cursor ? props.focused ? colors.accent : colors.subtle : colors.faint;
   const contentWidth = Math.max(1, props.width - 3);
   const service = props.sms ? "SMS " : "";

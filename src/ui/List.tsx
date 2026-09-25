@@ -38,7 +38,7 @@ export function List(props: ListProps) {
     </Box>
     <Box flexDirection="column" flexGrow={1} overflow="hidden">
       {props.status !== "ready" || !props.chats.length ? <Box paddingX={2}><Text color={props.status === "error" ? colors.failed : colors.subtle}>{empty}</Text></Box> : null}
-      {visible.map(chat => <ListRow chatGuid={chat.guid} key={chat.guid} title={chat.title} preview={chat.lastMessage?.body ?? ""} time={formatTime(chatActivity(chat))} unread={chat.unreadCount > 0} cursor={chat.guid === (props.focused ? props.cursor : props.selected)} active={props.focused && chat.guid === props.selected} focused={props.focused} sms={chat.service === "SMS"} width={props.width} onOpen={open} />)}
+      {visible.map(chat => <ListRow chatGuid={chat.guid} key={chat.guid} title={chat.title} preview={chat.lastMessage?.body ?? ""} time={formatTime(chatActivity(chat))} unread={chat.unreadCount > 0} cursor={chat.guid === (props.focused ? props.cursor : props.selected)} focused={props.focused} sms={chat.service === "SMS"} width={props.width} onOpen={open} />)}
     </Box>
   </Box>;
 }

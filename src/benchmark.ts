@@ -355,7 +355,7 @@ export function instrument(stdin: NodeJS.ReadStream, stdout: NodeJS.WriteStream,
       benchmark.note(`conversations ${state.chatsStatus}${state.chatsStatus === "ready" ? ` · ${state.chats.size}` : ""}`);
       if (state.chatsStatus === "ready") benchmark.reached("conversations");
     }
-    if (state.selected && state.selected !== previous.selected) benchmark.note("conversation opened");
+    if (state.selected && state.selected !== previous.selected) benchmark.note("conversation shown");
     const history = state.selected ? state.history.get(state.selected)?.kind : undefined;
     const before = state.selected ? previous.history.get(state.selected)?.kind : undefined;
     if (state.selected && history !== before && (history === "ready" || history === "loading")) {

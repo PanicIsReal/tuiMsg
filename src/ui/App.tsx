@@ -103,7 +103,7 @@ function AppContent({ session }: AppProps) {
                     onSelect={(messageGuid) => { if (input.kind === "list" || input.kind === "transcript" || input.kind === "composer") session.act({ type: "select-message", chatGuid: selected.guid, messageGuid }); }}
                     onHistory={(mode) => session.act({ type: "load-history", chatGuid: selected.guid, mode })}
                     loadAttachment={input.kind === "list" || input.kind === "transcript" || input.kind === "composer" ? session.loadAttachment : undefined}
-                    onViewAttachment={(attachment) => { if (input.kind === "list" || input.kind === "transcript" || input.kind === "composer") viewAttachment(session, attachment, { kind: "transcript", chatGuid: selected.guid }); }}
+                    onViewAttachment={(attachment) => { if (input.kind === "list" || input.kind === "transcript" || input.kind === "composer") viewAttachment(session, attachment, input.kind === "list" ? input : { kind: "transcript", chatGuid: selected.guid }); }}
                     onRetryRead={() => session.act({ type: "retry-read", chatGuid: selected.guid })} />
                   <Composer key={selected.guid} draft={draftFor(state, selected.guid)} service={selected.service} focused={input.kind === "composer"} width={laneWidth} maxRows={composerRows}
                     replyingTo={replyLabel(draftFor(state, selected.guid).replyTo, messages)}
@@ -123,7 +123,7 @@ function AppContent({ session }: AppProps) {
                 <Box flexGrow={1} justifyContent="center" alignItems="center">
                   <Box flexDirection="column" alignItems="center">
                     <Text><Text bold color={colors.text}>Choose a conversation</Text></Text>
-                    <Text><Text color={colors.secondary}>Enter opens the highlighted chat · n starts a new one</Text></Text>
+                    <Text><Text color={colors.secondary}>n starts a new one</Text></Text>
                   </Box>
                 </Box>
               )}
@@ -309,9 +309,9 @@ function routeTranscript(key: KeyEvent, context: RouteContext): boolean {
 
 function cyclePane(input: Pane, selected: ReturnType<Session["getSnapshot"]>["selected"], session: Session): void {
   if (!selected) { session.act({ type: "input", input: { kind: "list" } }); return; }
-  const next: Pane = input.kind === "list" ? { kind: "transcript", chatGuid: selected }
-    : input.kind === "transcript" ? { kind: "composer", chatGuid: selected } : { kind: "list" };
-  session.act({ type: "input", input: next });
+  // The conversation beside the list is only shown; moving into it opens it, as Enter does.
+  if (input.kind === "list") { session.act({ type: "open-chat", chatGuid: selected }); return; }
+  session.act({ type: "input", input: input.kind === "transcript" ? { kind: "composer", chatGuid: selected } : { kind: "list" } });
 }
 
 function selectedMessage(cursor: MessageGuid | undefined, messages: RouteContext["messages"]) {
